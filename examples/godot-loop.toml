@@ -1,0 +1,48 @@
+# Sample godot-loop.toml — drop a copy at the root of the project that
+# consumes godot-loop, then `godot-loop run e2e`.
+
+[project]
+# Path to the Godot project (the directory containing project.godot),
+# relative to this config file.
+path = "clients/my-game-client"
+
+# Optional: a KEY=VALUE .env file the loop will source for BACKEND_PORT.
+env_file = ".env"
+
+[health]
+# If set, the loop hits this URL before launching godot and aborts with a
+# friendly error if it doesn't return 2xx.  Strongly recommended.
+url = "http://127.0.0.1:8000/api/health"
+timeout_seconds = 5
+
+[e2e]
+# Extra args appended after `--` when launching godot.  --api-base and
+# --user-dir-tag are added automatically; everything project-specific (auto
+# load behavior, mode, etc.) goes here.
+launch_args = [
+  "--auto-load-campaign=first",
+  "--exit-after-bootstrap",
+]
+
+# Log markers the loop will grep for in godot stdout.  All must appear or
+# the run is a failure.
+log_markers = [
+  "bootstrap_succeeded",
+  "auto_load_campaign_loaded:",
+]
+
+screenshot_after_ms = 12000
+timeout_seconds = 60
+headless = false
+
+[user_dir_tag]
+# How the per-run user:// scope is derived.  "worktree-basename" appends
+# the project root's directory name, sanitized — useful for git worktrees.
+# Use "fixed" + a `fixed = "..."` field for a stable tag.
+strategy = "worktree-basename"
+prefix = "e2e"
+
+[hooks]
+# Optional script run before each launch.  Use it for project-specific
+# self-heal: addon symlinks, class-cache rebuilds, dev-token mints, etc.
+pre_launch = "scripts/godot-loop-pre-launch.sh"

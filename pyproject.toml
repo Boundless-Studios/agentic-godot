@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "godot-loop"
+version = "0.1.0"
+description = "Closed-loop validation harness for Godot game clients"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "godot-loop contributors" }]
+keywords = ["godot", "testing", "e2e", "headless", "screenshot"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Games/Entertainment",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = [
+  "tomli>=2.0; python_version<'3.11'",
+  "requests>=2.31",
+]
+
+[project.scripts]
+godot-loop = "godot_loop.cli:main"
+
+[project.urls]
+Source = "https://github.com/Boundless-Studios/agentic-godot"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/godot_loop"]
