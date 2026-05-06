@@ -124,6 +124,126 @@ godot-loop trace --endpoint /cards --endpoint /text   # poll-on-change
 godot-loop input mouse_button --button left --x 400 --y 300
 ```
 
+## How it works
+
+### The two halves
+
+godot-loop has two independent comms paths between the driver (CLI / agent
+/ CI) and the running Godot client:
+
+**1. Outbound launch — CLI flags + stdout markers.**
+
+```
+   driver ──spawn──▶  godot --path PROJECT --log-file LOG --
+                         --api-base=URL  --user-dir-tag=TAG
+                         --auto-load-campaign=ID  --exit-after-bootstrap
+                         --screenshot-after-ms=N  --screenshot-path=...
+                         --inspect-port=PORT
+                                 │
+   driver ◀──tail────             ├─ stdout/stderr  (LOG)
+                                 │
+   driver ◀──exit code───        ├─ exit(0|1)
+                                 │
+   driver ◀──read PNG───         └─ <screenshot-path>
+```
+
+`LoopLaunchConfig.apply_command_line_args(OS.get_cmdline_user_args())`
+parses the flags inside the running game.  The project decides when to
+print the configured `log_markers` (e.g. `bootstrap_succeeded`).  The
+driver tails the log file, asserts every marker appeared, and reads the
+PNG off disk.  No network involved on this path — it's enough for "did
+the bootstrap finish?" without standing up a server.
+
+**2. Inbound inspection — HTTP/1.1 over loopback TCP.**
+
+```
+   driver ──HTTP/1.1──▶  RuntimeInspectorServer @ 127.0.0.1:PORT
+                            │
+                            ├─ GET  /healthz         text/plain
+                            ├─ GET  /scene           application/json
+                            ├─ GET  /text            application/json
+                            ├─ GET  /viewport        application/json
+                            ├─ GET  /screenshot.png  image/png
+                            ├─ GET  /<custom>        application/json  (register_provider)
+                            └─ POST /input           application/json
+                                     ▼
+                                root_window.push_input(event)
+```
+
+The server is implemented in ~370 lines of GDScript on top of `TCPServer`
++ `StreamPeerTCP` — no extension, no plugin DLL, no addon registration.
+Each request is one-shot (`Connection: close`); the server polls
+connections in `_process()` with a 3 s timeout and a 16 KB request cap.
+Bound to `127.0.0.1` only, intentionally — this is for local agents, not
+remote control.
+
+The protocol is plain HTTP because every language (Python, bash + curl,
+node, JS in a browser tab, *another Godot instance*) already has a client
+for it.  A driver can be the godot-loop Python CLI, a shell loop, or a
+language-model tool call.
+
+### What the protocol is NOT
+
+It's **not** a stable wire schema.  JSON shapes for `/scene` and `/text`
+match Godot's runtime types — when Godot adds a property to `Control`,
+it shows up in `/scene` for free.  Treat the response as descriptive,
+not as a contract.  If you need stability, project-side providers
+(`register_provider("/cards", ...)`) are where you author your own
+shapes.
+
+### vs Godot MCP servers (e.g. `godot-ai`)
+
+A Godot MCP server (the kind that exposes `scene_get_hierarchy`,
+`script_create`, `node_set_property`, `editor_screenshot`) drives the
+**editor** at design time — it manipulates the project files, the open
+scene, the script outline, the editor's selection.  You'd use it to
+*build* the game.
+
+godot-loop drives the **running game** at runtime — it launches the
+exported/runtime project the way a player would, then queries what's on
+screen and what events have fired.  You'd use it to *validate* the game
+after the editor MCP changes it.
+
+|                          | Godot MCP (e.g. godot-ai) | godot-loop |
+|--------------------------|---------------------------|------------|
+| Target                   | Editor                    | Running game runtime |
+| Lifetime                 | While editor is open      | One launch per `run e2e` |
+| Operations               | Scene/script/resource authoring | Cockpit observation + input injection |
+| Process model            | Persistent MCP over stdio | One-shot HTTP per request |
+| Talks to                 | `Engine.is_editor_hint()` paths | The same scene tree the player sees |
+| Typical use              | "Add a Camera2D, attach this script" | "Did bootstrap finish, what cards are on screen?" |
+
+They compose: an agent uses an editor MCP to *change* the project, then
+godot-loop to *prove* the change still produces a working bootstrap.
+Neither replaces the other.
+
+### Editor dependency
+
+The harness's runtime path **does not require the editor**.  `godot
+--headless --path PROJECT` runs the GDScript runtime directly; `godot
+--path PROJECT` (windowed) does the same with a window.
+
+There is one editor-side step that some projects need to run **once per
+fresh checkout** or after adding a new `class_name`: Godot lazily builds
+`.godot/global_script_class_cache.cfg` only during an editor scan.  If
+your project references `class_name` globals from `Main.gd` (which is
+typical), a fresh runtime launch will fail to parse those names until
+the cache exists.
+
+The fix is one short editor-headless invocation:
+
+```bash
+godot --headless --editor --quit-after 200 --path PROJECT
+```
+
+This isn't a dependency of godot-loop itself — it's a project-side
+concern that lives in the `[hooks].pre_launch` script.  Once the cache
+is on disk, every subsequent `godot-loop run e2e` runs editor-free.
+
+The `/screenshot.png` endpoint also requires a **windowed** runtime —
+`--headless` has no viewport texture to grab.  That's why `[e2e].headless
+= true` skips the screenshot assertion.
+
 ## CLI reference
 
 | Command | What it does |
