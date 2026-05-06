@@ -169,6 +169,128 @@ Now `godot-loop inspect --endpoint /inventory` returns whatever you
 wrote.  Useful for asserting "is the right thing on screen?" from a
 script or an agent.
 
+## Driving the game
+
+The point of `/input` plus the read endpoints is the full **see → act →
+see again** loop — what makes the harness usable by an agent (or a
+script that wants to act like one):
+
+```mermaid
+flowchart LR
+    A[GET /scene<br/>or /text<br/>or /screenshot.png] -->|"find the thing<br/>to interact with"| B[POST /input<br/>click / type / move]
+    B -->|"engine processes<br/>the event"| C[Game state<br/>updates]
+    C -->|"GET again to<br/>see what changed"| A
+```
+
+### How input gets in
+
+`POST /input` builds a real `InputEvent` (one of `InputEventMouseButton`,
+`InputEventMouseMotion`, or `InputEventKey`) and calls
+`get_tree().get_root().push_input(event)` on it.  That means the event
+goes through Godot's normal input pipeline: `Button` nodes fire their
+`pressed` signal, `Area2D`/`Area3D` `input_event` works, anything that
+listens via `_input()` / `_unhandled_input()` runs.  There's no special
+test path — the running game can't tell the click came from the
+inspector vs. a real mouse.
+
+Three event types:
+
+| Type | Required | Optional | Effect |
+|------|----------|----------|--------|
+| `mouse_button` | `button` | `x`, `y`, `pressed` (default `true`) | Press or release a mouse button at viewport coords |
+| `mouse_motion` | — | `x`, `y` | Move the mouse to viewport coords |
+| `key` | `keycode` | `pressed`, `shift`, `ctrl`, `alt`, `meta` | Press or release a key |
+
+`button` is one of `left`, `right`, `middle`, `wheel_up`, `wheel_down`.
+`keycode` accepts an integer or a string Godot recognizes (e.g. `"A"`,
+`"Enter"`, `"Space"`).
+
+### Finding what to click
+
+Click coordinates are viewport pixels, not screen pixels.  You usually
+don't want to hard-code them — `GET /scene` returns every `Control`'s
+`global_pos` and `size`, so a script can look up a node by name and
+click its center:
+
+```python
+import requests
+scene = requests.get("http://127.0.0.1:8765/scene").json()
+
+def find(node, name):
+    if node.get("name") == name:
+        return node
+    for child in node.get("children", []):
+        hit = find(child, name)
+        if hit:
+            return hit
+
+start = find(scene["root"], "StartButton")
+cx = start["global_pos"]["x"] + start["size"]["x"] / 2
+cy = start["global_pos"]["y"] + start["size"]["y"] / 2
+
+requests.post("http://127.0.0.1:8765/input", json={
+    "type": "mouse_button", "button": "left", "x": cx, "y": cy, "pressed": True,
+})
+requests.post("http://127.0.0.1:8765/input", json={
+    "type": "mouse_button", "button": "left", "x": cx, "y": cy, "pressed": False,
+})
+```
+
+`POST /input` returns `{"focused": "<NodePath>", ...}` so you can
+confirm something actually picked up the event.
+
+### Observing what changed
+
+After input, **give the engine a frame to process** (a single `_process`
+tick — usually 16-50 ms is plenty in practice).  Then re-read whichever
+endpoint tells you what you care about:
+
+| Question | Endpoint |
+|----------|----------|
+| Is a particular node visible / where is it? | `GET /scene` |
+| Did some text change? | `GET /text` |
+| Did a popup appear / does it look right? | `GET /screenshot.png` |
+| Did some game-specific state update? | `GET /<your_provider>` |
+
+The CLI's `godot-loop trace` does this for you on a poll: pass
+`--endpoint` once or many times, and it prints only when the response
+changes — useful for watching a sequence of state transitions live.
+
+### A worked example: click through a menu
+
+```bash
+# 1. Launch with the inspector open.
+godot-loop run e2e --extra --inspect-port=8765 &
+sleep 3
+
+# 2. See what's on screen.
+godot-loop inspect --endpoint /text
+
+# 3. Click "Start".
+godot-loop input mouse_button --button left --x 640 --y 400
+
+# 4. Confirm the menu went away and the next scene loaded.
+sleep 0.2
+godot-loop inspect --endpoint /text     # should show different text now
+```
+
+Wrap that in a Python script (or hand it to an agent) and you have
+end-to-end gameplay automation — drive any flow your real player can.
+
+### Notes
+
+- The inspector lives for the **whole godot run**.  One launch = one
+  port; you can issue thousands of requests against it.
+- Input is **asynchronous**.  The HTTP call returns once the event was
+  pushed; the *consequence* of the event happens on the next frame.
+  Give it a beat (`sleep 0.1`) before re-reading state.
+- For UI assertions specific to your game, register a provider — it's
+  more reliable than scraping `/scene` for node paths that may shift.
+- The inspector is **debug-only**.  Don't ship a build with
+  `--inspect-port` enabled by default.
+
+## Frequently asked
+
 ### How is this different from a Godot MCP server (like `godot-ai`)?
 
 A Godot MCP drives the **editor**, while you're authoring the project —
