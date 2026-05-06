@@ -67,7 +67,7 @@ def cmd_trace(args: argparse.Namespace) -> int:
         cfg,
         port=args.port,
         interval=args.interval,
-        endpoints=args.endpoint or ("/cards", "/text"),
+        endpoints=args.endpoint or ("/scene", "/text"),
     )
 
 

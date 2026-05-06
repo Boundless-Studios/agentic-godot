@@ -246,7 +246,7 @@ def trace(
     *,
     port: int | None,
     interval: float = 1.0,
-    endpoints: Iterable[str] = ("/cards", "/text"),
+    endpoints: Iterable[str] = ("/scene", "/text"),
 ) -> int:
     base = _inspector_base(cfg, port)
     _print(f"==> tracing {base} (Ctrl-C to stop)")
