@@ -5,18 +5,19 @@ class_name LoopLaunchConfig
 # this RefCounted directly, or extend it and add project-specific flags.
 #
 #   --api-base=URL              backend base URL (sanitized to IPv4)
+#   --access-token=TOKEN        bearer token to inject (optional)
 #   --user-dir-tag=TAG          per-run user:// scope (avoids cross-run cache poison)
-#   --auto-load-campaign=ID     opaque token consumed by the project bootstrap
-#   --exit-after-bootstrap      quit once bootstrap_succeeded fires
+#   --exit-after-bootstrap      quit once your project signals it is ready
 #   --screenshot-after-ms=N     N ms after _ready, save the viewport
 #   --screenshot-path=PATH      where to save it
 #   --inspect-port=N            stand up RuntimeInspectorServer on 127.0.0.1:N
-#   --access-token=TOKEN        bearer token to inject (optional)
+#
+# Project-specific flags belong in a subclass — call super() then walk
+# the same args list for your own prefixes.
 
 var api_base_url: String = ""
 var bearer_token: String = ""
 var user_dir_tag: String = ""
-var auto_load_campaign: String = ""
 var exit_after_bootstrap: bool = false
 var screenshot_after_ms: int = 0
 var screenshot_path: String = ""
@@ -36,9 +37,6 @@ func apply_command_line_args(args: PackedStringArray) -> bool:
 			changed = true
 		elif arg.begins_with("--user-dir-tag="):
 			user_dir_tag = arg.substr("--user-dir-tag=".length()).strip_edges()
-			changed = true
-		elif arg.begins_with("--auto-load-campaign="):
-			auto_load_campaign = arg.substr("--auto-load-campaign=".length()).strip_edges()
 			changed = true
 		elif arg == "--exit-after-bootstrap":
 			exit_after_bootstrap = true

@@ -1,6 +1,6 @@
 # Integrating godot-loop into an existing Godot project
 
-This guide walks through what a consumer project needs to do.
+This guide walks through what a project needs to do to use the harness.
 
 ## 1. Make the addon discoverable
 
@@ -9,11 +9,11 @@ Either symlink (preferred while you iterate on godot-loop itself) or copy
 
 The classes the addon exposes:
 
-- `LoopLaunchConfig` — `RefCounted`, parses standard CLI flags
-- `RuntimeInspectorServer` — `Node`, localhost HTTP debug server
+- `LoopLaunchConfig` — `RefCounted`, parses standard CLI flags.
+- `RuntimeInspectorServer` — `Node`, localhost HTTP debug server.
 
-Both use `class_name`, so once the addon is on disk you can reference them
-from any GDScript without an explicit `preload`.
+Both use `class_name`, so once the addon is on disk you can reference
+them from any GDScript without an explicit `preload`.
 
 ## 2. Wire LoopLaunchConfig into your bootstrap
 
@@ -23,18 +23,17 @@ In your main scene's bootstrap:
 var launch_config := LoopLaunchConfig.new()
 launch_config.apply_command_line_args(OS.get_cmdline_user_args())
 
-# api_base_url, bearer_token, user_dir_tag, auto_load_campaign,
-# exit_after_bootstrap, screenshot_after_ms, screenshot_path,
-# inspect_port are now populated.
+# api_base_url, bearer_token, user_dir_tag, exit_after_bootstrap,
+# screenshot_after_ms, screenshot_path, inspect_port are now populated.
 
 if launch_config.user_dir_tag != "":
-    # Scope your user:// cache directory by the tag so concurrent runs
-    # in different worktrees don't collide on cached api_base_url etc.
+    # Scope your user:// cache by the tag so concurrent runs in different
+    # worktrees don't collide on cached state.
     cache = MyLocalCache.new(launch_config.user_dir_tag)
 ```
 
-If your project also has its own flags, subclass `LoopLaunchConfig` and
-walk the same args list inside `apply_command_line_args`.
+If your project has its own flags, subclass `LoopLaunchConfig` and walk
+the same args list inside `apply_command_line_args`.
 
 ## 3. Stand up the inspector
 
@@ -42,8 +41,8 @@ walk the same args list inside `apply_command_line_args`.
 if launch_config.inspect_port > 0:
     var inspector := RuntimeInspectorServer.new()
     inspector.setup(launch_config.inspect_port)
-    inspector.register_provider("/cards", func() -> Dictionary:
-        return _cards_payload())
+    inspector.register_provider("/state", func() -> Dictionary:
+        return _state_payload())
     add_child(inspector)
 ```
 
@@ -56,13 +55,13 @@ The addon does not enforce these — your bootstrap signals "ready" however
 it does today.  Add two short hooks:
 
 ```gdscript
-func _on_bootstrap_succeeded() -> void:
-    print("bootstrap_succeeded")
+func _on_ready() -> void:
+    print("ready")        # matches log_markers in your godot-loop.toml
     if launch_config.screenshot_after_ms > 0 and launch_config.screenshot_path != "":
         get_tree().create_timer(launch_config.screenshot_after_ms / 1000.0).timeout.connect(
             _save_screenshot.bind(launch_config.screenshot_path))
     if launch_config.exit_after_bootstrap:
-        # Give the screenshot timer a beat to fire before quitting.
+        # Let the screenshot timer fire first, then quit.
         get_tree().create_timer(2.0 + launch_config.screenshot_after_ms / 1000.0).timeout.connect(
             get_tree().quit)
 ```
@@ -79,27 +78,28 @@ Copy `examples/godot-loop.toml` to the root of your repo.  Fill in:
 
 ## 6. (Optional) pre_launch hook
 
-This is where project-specific weirdness lives — class cache rebuilds,
-addon symlinks, dev-token mints.  godot-loop itself stays project-agnostic.
+This is where project-specific concerns live — class cache rebuilds,
+addon symlinks, dev tokens, anything else your project needs to do once
+per run.  godot-loop itself stays project-agnostic.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-# scripts/godot-loop-pre-launch.sh — gaia example
 ROOT="$(git rev-parse --show-toplevel)"
 
-# Self-heal addon symlinks if missing
-[[ -e "$ROOT/clients/x/addons/godot_ai" ]] || ln -s ~/.local/share/godot-ai/plugin/addons/godot_ai "$ROOT/clients/x/addons/godot_ai"
+# Example: self-heal a third-party addon symlink
+[[ -e "$ROOT/path/to/addons/some_addon" ]] \
+  || ln -s ~/.local/share/some_addon "$ROOT/path/to/addons/some_addon"
 
-# Mint a dev token and stash it for Main.gd to find
-bash "$ROOT/scripts/dev/mint-dev-token.sh"
+# Example: rebuild Godot's class_name cache after a code change
+godot --headless --editor --quit-after 200 --path "$ROOT/path/to/project" >/dev/null 2>&1 || true
 ```
 
 ## 7. Run it
 
 ```bash
 godot-loop run e2e
-godot-loop run smoke launch_config_smoke.gd
-godot-loop inspect --endpoint /cards
-godot-loop trace
+godot-loop run smoke my_smoke.gd
+godot-loop inspect --endpoint /state
+godot-loop trace --endpoint /state
 ```

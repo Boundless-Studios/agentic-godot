@@ -17,18 +17,18 @@ timeout_seconds = 5
 
 [e2e]
 # Extra args appended after `--` when launching godot.  --api-base and
-# --user-dir-tag are added automatically; everything project-specific (auto
-# load behavior, mode, etc.) goes here.
+# --user-dir-tag are added automatically; project-specific flags (any
+# args your subclass of LoopLaunchConfig consumes) go here.
 launch_args = [
-  "--auto-load-campaign=first",
   "--exit-after-bootstrap",
+  # "--load-default-scene=town",   # example project-specific flag
 ]
 
 # Log markers the loop will grep for in godot stdout.  All must appear or
-# the run is a failure.
+# the run is a failure.  Pick strings your project prints to mark
+# successful startup.
 log_markers = [
-  "bootstrap_succeeded",
-  "auto_load_campaign_loaded:",
+  "ready",
 ]
 
 screenshot_after_ms = 12000

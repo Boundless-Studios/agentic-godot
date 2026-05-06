@@ -3,73 +3,63 @@
 End-to-end automation for Godot development — letting coding agents
 build, run, and observe live Godot clients.
 
-Currently ships **godot-loop**, a closed-loop validation harness that
-turns the usual "did my change break the game?" loop into something a
-machine can drive.  An addon stands up an HTTP runtime inspector inside
-your Godot client; a Python CLI launches the engine with smoke-mode
-flags, asserts log markers, captures screenshots, and pokes at the
-running cockpit while it plays.
+Currently ships **godot-loop**: a small tool that lets you (or an AI
+agent) launch your Godot game, watch what happens, take a screenshot,
+and ask questions about what's on screen — all from the command line or
+a script.
 
-> **Status**: alpha (0.1).  Carved out of a production game-client
-> harness.  The shape is stable; the public API may shift before 1.0.
+> **Status**: alpha (0.1).  Stable shape, may rename a few things before 1.0.
 
-```text
-   ┌──────────────────────────────────────────────────────────────┐
-   │  godot-loop run e2e                                           │
-   │      │                                                        │
-   │      ├── pre_launch hook  (project-specific self-heal)        │
-   │      ├── health check     (curl your backend)                 │
-   │      ├── godot launch     (--api-base / --user-dir-tag /      │
-   │      │                     --auto-load-... / --inspect-port)  │
-   │      │       │                                                │
-   │      │       └── RuntimeInspectorServer @ 127.0.0.1:N         │
-   │      │              GET /scene  /text  /viewport  /cards      │
-   │      │              GET /screenshot.png                       │
-   │      │              POST /input                               │
-   │      ├── log-marker grep  (bootstrap_succeeded, ...)          │
-   │      ├── screenshot capture                                    │
-   │      └── exit 0/1                                             │
-   └──────────────────────────────────────────────────────────────┘
+## What it does
+
+When you run **`godot-loop run e2e`**, the CLI:
+
+1. Checks your backend is up
+2. Launches your game
+3. Waits for it to print `"ready"`
+4. Takes a screenshot
+5. Exits `0` if all good, non-zero if anything failed
+
+That's the basic loop.  When you also pass `--inspect-port`, the game
+opens a tiny HTTP server you can talk to while it's running:
+
+```bash
+godot-loop inspect --endpoint /scene                       # what's the node tree?
+godot-loop inspect --endpoint /text                        # what text is on screen?
+godot-loop inspect --endpoint /screenshot.png --save-to now.png
+godot-loop input mouse_button --x 400 --y 300              # click here
 ```
 
 ## Why
 
-`godot --headless` + GUT-style smokes prove your **components** work in
-isolation.  They don't prove the **user-visible loop** works — bootstrap
-finishing, the backend actually answering, the right scene being on
-screen, no cards racing into the wrong order.  godot-loop fills that gap
-with three repeatable tiers:
+Unit tests prove pieces of your game work.  They don't prove the **game
+itself** works — that it actually starts up, talks to its backend, and
+puts the right thing on screen.  godot-loop is the thing you run to
+answer "did I just break the game?"
 
-| Tier | What it proves | How |
-|------|---------------|-----|
-| **1 — Unit smokes** | Components in isolation | `godot-loop run smoke <name>` (your `*_smoke.gd` files, headless) |
-| **2 — End-to-end** | User-visible bootstrap loop | `godot-loop run e2e` boots the client, asserts log markers, captures a windowed screenshot |
-| **3 — Live trace** | Event-ordering / timing bugs | `--inspect-port=N` + `godot-loop inspect`/`trace`/`input` against the running cockpit |
+It's three checks, smallest first:
 
-Tiers 1 and 2 catch most regressions cheaply.  Tier 3 catches the bugs
-that pass smokes-green because the smoke calls the store directly and
-never sees the dispatcher's per-event ordering — the cockpit incident in
-the production codebase that this was carved out of, and the reason
-`/cards` + `/scene` exist as live endpoints.
+1. **Unit tests** — your existing `*_smoke.gd` files, run headless.
+2. **End-to-end** — launch the game, wait for "ready", grab a screenshot.
+3. **Live inspection** — talk to the running game over HTTP while it plays.
+
+Use whichever level fits the change.
 
 ## Install
 
 ```bash
-# CLI
-pip install -e /path/to/agentic-godot          # editable, while developing
-# (or, when published)
-# pip install godot-loop
+pip install -e /path/to/agentic-godot          # CLI (editable for now)
 ```
+
+Drop the addon into your Godot project (symlink while you iterate):
 
 ```bash
-# Addon — symlink (recommended) or copy into your Godot project
-ln -s /path/to/agentic-godot/addon/godot_loop \
-      your-godot-project/addons/godot_loop
+ln -s /path/to/agentic-godot/addon/godot_loop  your-project/addons/godot_loop
 ```
 
-## Quickstart
+## Add it to your game
 
-**1. Wire the addon into your project's bootstrap.**
+Two small bits of GDScript in your main scene:
 
 ```gdscript
 extends Node
@@ -80,246 +70,211 @@ func _ready() -> void:
     launch_config = LoopLaunchConfig.new()
     launch_config.apply_command_line_args(OS.get_cmdline_user_args())
 
+    # Optional: open the inspector if --inspect-port=N was passed.
     if launch_config.inspect_port > 0:
         var inspector := RuntimeInspectorServer.new()
         inspector.setup(launch_config.inspect_port)
-        inspector.register_provider("/cards", func() -> Dictionary:
-            return {"cards": my_card_store.cards})
         add_child(inspector)
 
-    # ... your normal bootstrap.  When ready:
-    print("bootstrap_succeeded")
+    # ... your normal startup ...
+
+    print("ready")    # godot-loop watches for this in the log
     if launch_config.exit_after_bootstrap:
         await get_tree().create_timer(2.0).timeout
         get_tree().quit()
 ```
 
-**2. Drop a `godot-loop.toml` at your repo root.**
+Drop a `godot-loop.toml` at your repo root:
 
 ```toml
 [project]
-path = "clients/your-godot-project"
-env_file = ".env"
+path = "path/to/your/godot/project"
 
 [health]
-url = "http://127.0.0.1:8000/api/health"
+url = "http://127.0.0.1:8000/health"     # optional
 
 [e2e]
-launch_args = ["--auto-load-campaign=first", "--exit-after-bootstrap"]
-log_markers = ["bootstrap_succeeded", "auto_load_campaign_loaded:"]
-screenshot_after_ms = 12000
-timeout_seconds = 60
-
-[hooks]
-pre_launch = "scripts/godot-loop-pre-launch.sh"  # optional
+launch_args = ["--exit-after-bootstrap"]
+log_markers = ["ready"]                  # all must appear in stdout
 ```
 
-**3. Run it.**
+Run it:
 
 ```bash
-godot-loop run e2e                                    # full bootstrap + screenshot
-godot-loop run smoke launch_config_smoke.gd
-godot-loop inspect --endpoint /cards
-godot-loop trace --endpoint /cards --endpoint /text   # poll-on-change
-godot-loop input mouse_button --button left --x 400 --y 300
+godot-loop run e2e
 ```
+
+That's the whole flow.
 
 ## How it works
 
-### The two halves
+There are two ways the driver (the CLI, or anything that knows how to
+spawn processes and speak HTTP) talks to your running game.
 
-godot-loop has two independent comms paths between the driver (CLI / agent
-/ CI) and the running Godot client:
+### 1. Launching the game (one direction)
 
-**1. Outbound launch — CLI flags + stdout markers.**
+The CLI runs `godot --path PROJECT --` and passes flags after the `--`.
+The addon's `LoopLaunchConfig` reads them inside the running game.
+Your code reacts (prints `"ready"`, takes a screenshot, quits).
 
-```
-   driver ──spawn──▶  godot --path PROJECT --log-file LOG --
-                         --api-base=URL  --user-dir-tag=TAG
-                         --auto-load-campaign=ID  --exit-after-bootstrap
-                         --screenshot-after-ms=N  --screenshot-path=...
-                         --inspect-port=PORT
-                                 │
-   driver ◀──tail────             ├─ stdout/stderr  (LOG)
-                                 │
-   driver ◀──exit code───        ├─ exit(0|1)
-                                 │
-   driver ◀──read PNG───         └─ <screenshot-path>
-```
-
-`LoopLaunchConfig.apply_command_line_args(OS.get_cmdline_user_args())`
-parses the flags inside the running game.  The project decides when to
-print the configured `log_markers` (e.g. `bootstrap_succeeded`).  The
-driver tails the log file, asserts every marker appeared, and reads the
-PNG off disk.  No network involved on this path — it's enough for "did
-the bootstrap finish?" without standing up a server.
-
-**2. Inbound inspection — HTTP/1.1 over loopback TCP.**
-
-```
-   driver ──HTTP/1.1──▶  RuntimeInspectorServer @ 127.0.0.1:PORT
-                            │
-                            ├─ GET  /healthz         text/plain
-                            ├─ GET  /scene           application/json
-                            ├─ GET  /text            application/json
-                            ├─ GET  /viewport        application/json
-                            ├─ GET  /screenshot.png  image/png
-                            ├─ GET  /<custom>        application/json  (register_provider)
-                            └─ POST /input           application/json
-                                     ▼
-                                root_window.push_input(event)
+```mermaid
+sequenceDiagram
+    participant Driver as godot-loop CLI
+    participant Godot as Godot runtime
+    participant FS as Disk
+    Driver->>Godot: spawn godot --path PROJECT -- <flags>
+    Godot->>FS: write stdout/stderr to log file
+    Godot->>FS: save screenshot.png
+    Godot-->>Driver: exit code
+    FS-->>Driver: tail log for markers, read PNG
 ```
 
-The server is implemented in ~370 lines of GDScript on top of `TCPServer`
-+ `StreamPeerTCP` — no extension, no plugin DLL, no addon registration.
-Each request is one-shot (`Connection: close`); the server polls
-connections in `_process()` with a 3 s timeout and a 16 KB request cap.
-Bound to `127.0.0.1` only, intentionally — this is for local agents, not
-remote control.
+No network on this path — just files and exit codes.  This is enough to
+answer "did my game start up properly?"
 
-The protocol is plain HTTP because every language (Python, bash + curl,
-node, JS in a browser tab, *another Godot instance*) already has a client
-for it.  A driver can be the godot-loop Python CLI, a shell loop, or a
-language-model tool call.
+### 2. Inspecting the running game (two-way HTTP)
 
-### What the protocol is NOT
+When you pass `--inspect-port=N`, the addon stands up a tiny HTTP server
+on `127.0.0.1:N`:
 
-It's **not** a stable wire schema.  JSON shapes for `/scene` and `/text`
-match Godot's runtime types — when Godot adds a property to `Control`,
-it shows up in `/scene` for free.  Treat the response as descriptive,
-not as a contract.  If you need stability, project-side providers
-(`register_provider("/cards", ...)`) are where you author your own
-shapes.
+```mermaid
+sequenceDiagram
+    participant Driver as godot-loop CLI
+    participant Server as RuntimeInspectorServer<br/>127.0.0.1:N
+    Driver->>Server: GET /scene
+    Server-->>Driver: JSON node tree
+    Driver->>Server: GET /text
+    Server-->>Driver: JSON of visible text
+    Driver->>Server: GET /screenshot.png
+    Server-->>Driver: PNG bytes
+    Driver->>Server: POST /input  (click / key)
+    Server-->>Driver: { ok: true }
+```
 
-### vs Godot MCP servers (e.g. `godot-ai`)
+It's plain HTTP because everything already speaks HTTP — `curl`, Python
+`requests`, your browser, an LLM tool call.  The whole server is a few
+hundred lines of GDScript on top of `TCPServer`.  Bound to localhost
+only — it's a debug tool, not a remote control.
 
-A Godot MCP server (the kind that exposes `scene_get_hierarchy`,
-`script_create`, `node_set_property`, `editor_screenshot`) drives the
-**editor** at design time — it manipulates the project files, the open
-scene, the script outline, the editor's selection.  You'd use it to
-*build* the game.
+### Custom endpoints
 
-godot-loop drives the **running game** at runtime — it launches the
-exported/runtime project the way a player would, then queries what's on
-screen and what events have fired.  You'd use it to *validate* the game
-after the editor MCP changes it.
+You can add your own GET endpoints to expose game-specific state:
 
-|                          | Godot MCP (e.g. godot-ai) | godot-loop |
-|--------------------------|---------------------------|------------|
-| Target                   | Editor                    | Running game runtime |
-| Lifetime                 | While editor is open      | One launch per `run e2e` |
-| Operations               | Scene/script/resource authoring | Cockpit observation + input injection |
-| Process model            | Persistent MCP over stdio | One-shot HTTP per request |
-| Talks to                 | `Engine.is_editor_hint()` paths | The same scene tree the player sees |
-| Typical use              | "Add a Camera2D, attach this script" | "Did bootstrap finish, what cards are on screen?" |
+```gdscript
+inspector.register_provider("/inventory", func() -> Dictionary:
+    return {"items": player.inventory})
+```
 
-They compose: an agent uses an editor MCP to *change* the project, then
-godot-loop to *prove* the change still produces a working bootstrap.
-Neither replaces the other.
+Now `godot-loop inspect --endpoint /inventory` returns whatever you
+wrote.  Useful for asserting "is the right thing on screen?" from a
+script or an agent.
 
-### Editor dependency
+### How is this different from a Godot MCP server (like `godot-ai`)?
 
-The harness's runtime path **does not require the editor**.  `godot
---headless --path PROJECT` runs the GDScript runtime directly; `godot
---path PROJECT` (windowed) does the same with a window.
+A Godot MCP drives the **editor**, while you're authoring the project —
+think "create a Camera2D node, attach this script."  godot-loop drives
+the **running game**, after you've launched it — think "did the game
+start, what's on screen now, click this button."
 
-There is one editor-side step that some projects need to run **once per
-fresh checkout** or after adding a new `class_name`: Godot lazily builds
-`.godot/global_script_class_cache.cfg` only during an editor scan.  If
-your project references `class_name` globals from `Main.gd` (which is
-typical), a fresh runtime launch will fail to parse those names until
-the cache exists.
+|                  | Editor MCP (e.g. godot-ai) | godot-loop                 |
+|------------------|---------------------------|----------------------------|
+| Talks to         | The Godot editor          | Your running game          |
+| When             | While you're building     | While the game is running  |
+| Used for         | Authoring scenes/scripts  | Validating + observing     |
 
-The fix is one short editor-headless invocation:
+They're complementary.  An agent can use an editor MCP to *change* the
+project, then use godot-loop to *check* the change still produces a
+working game.
+
+### Does it need the editor?
+
+Not for the runtime.  `godot --path PROJECT` (or `--headless`) just
+runs your game.
+
+There's one wrinkle: Godot only builds the `class_name` lookup cache
+when the editor scans the project, so a fresh checkout (or a new
+`class_name` you just added) might fail to start until the cache exists.
+The fix is one short editor-headless invocation, usually run once from
+the `pre_launch` hook:
 
 ```bash
 godot --headless --editor --quit-after 200 --path PROJECT
 ```
 
-This isn't a dependency of godot-loop itself — it's a project-side
-concern that lives in the `[hooks].pre_launch` script.  Once the cache
-is on disk, every subsequent `godot-loop run e2e` runs editor-free.
+After that the cache is on disk and the runtime works alone.
 
-The `/screenshot.png` endpoint also requires a **windowed** runtime —
-`--headless` has no viewport texture to grab.  That's why `[e2e].headless
-= true` skips the screenshot assertion.
+The `/screenshot.png` endpoint also needs a windowed run — `--headless`
+has no viewport to capture from.
 
 ## CLI reference
 
 | Command | What it does |
 |---------|--------------|
-| `godot-loop run e2e` | Boot client headlessly with smoke flags, assert markers, capture PNG. Honours `--api-base`, `--headless`, `--screenshot-path`, `--keep-output`, `--extra ...`. |
-| `godot-loop run smoke <gd_path>` | Run one `*_smoke.gd` file headless via `--script`.  Looks under `<project>/scripts/dev/` if the path is bare. |
-| `godot-loop inspect` | `GET` an endpoint from a running `RuntimeInspectorServer`.  `--endpoint /scene` (default), `--save-to PATH` for `/screenshot.png`. |
-| `godot-loop trace` | Poll inspector endpoints, print on change.  `--endpoint` is repeatable; `--interval` defaults to 1s. |
-| `godot-loop input <type>` | `POST /input`.  Types: `mouse_button` (`--button`, `--x`, `--y`, `--pressed`/`--released`), `mouse_motion` (`--x`, `--y`), `key` (`--keycode`, modifiers). |
+| `godot-loop run e2e` | Launch the game, wait for log markers, capture a screenshot, exit 0/1 |
+| `godot-loop run smoke <gd_path>` | Run one `*_smoke.gd` file headless |
+| `godot-loop inspect --endpoint /...` | GET an endpoint from the running inspector |
+| `godot-loop trace --endpoint /...` | Poll endpoints, print only when something changed |
+| `godot-loop input <type>` | POST a click / mouse-move / keypress to the running game |
 
-All commands accept `--config PATH` to override config-file discovery
-(default: walk up from cwd looking for `godot-loop.toml`).
+All commands accept `--config PATH` to point at a specific
+`godot-loop.toml`.  By default they walk up from cwd to find one.
 
 ## Addon API
 
 ### `LoopLaunchConfig` (`RefCounted`)
 
-Parses standard CLI flags from `OS.get_cmdline_user_args()`.  Fields:
+Reads command-line flags inside your running game:
 
-| Flag | Field | Notes |
-|------|-------|-------|
-| `--api-base=URL` | `api_base_url` | IPv4-normalized (`localhost` → `127.0.0.1`) |
-| `--access-token=TOKEN` | `bearer_token` | Optional |
-| `--user-dir-tag=TAG` | `user_dir_tag` | Per-run scope for `user://` cache |
-| `--auto-load-campaign=ID` | `auto_load_campaign` | Opaque token consumed by your bootstrap |
-| `--exit-after-bootstrap` | `exit_after_bootstrap` (bool) | Quit once you signal ready |
-| `--screenshot-after-ms=N` | `screenshot_after_ms` | When to capture |
-| `--screenshot-path=PATH` | `screenshot_path` | Where to write |
-| `--inspect-port=N` | `inspect_port` | Stand up RuntimeInspectorServer on `127.0.0.1:N` |
+| Flag | Field | What it's for |
+|------|-------|---------------|
+| `--api-base=URL` | `api_base_url` | Backend URL (auto-rewrites `localhost` → `127.0.0.1`) |
+| `--access-token=TOKEN` | `bearer_token` | Optional bearer token |
+| `--user-dir-tag=TAG` | `user_dir_tag` | Use a per-run `user://` so cached state from another run can't poison this one |
+| `--exit-after-bootstrap` | `exit_after_bootstrap` (bool) | Quit once your code signals "ready" |
+| `--screenshot-after-ms=N` | `screenshot_after_ms` | Wait this long, then save a screenshot |
+| `--screenshot-path=PATH` | `screenshot_path` | Where to save it |
+| `--inspect-port=N` | `inspect_port` | Open the HTTP inspector on `127.0.0.1:N` |
 
-Subclass to add project-specific flags — call `super()` then walk the same args list.
+Need more flags?  Subclass it.  Call `super()` then walk the same args list.
 
 ### `RuntimeInspectorServer` (`Node`)
 
-Localhost HTTP server.  Built-in endpoints:
+A tiny HTTP server.  Built-in endpoints:
 
-| Method | Path | Returns |
-|--------|------|---------|
+| Method | Path | What it returns |
+|--------|------|------------------|
 | GET | `/healthz` | `ok` |
-| GET | `/scene` | Recursive node tree dump (name, type, path, visible, global_pos/size, depth 8) |
-| GET | `/text` | Every visible `Label` / `RichTextLabel` text + node path |
-| GET | `/viewport` | Root window size/position, content scale, display info |
+| GET | `/scene` | The node tree (name, type, path, visible, position/size) |
+| GET | `/text` | Every visible `Label` / `RichTextLabel` text |
+| GET | `/viewport` | Window size, content scale, display info |
 | GET | `/screenshot.png` | PNG of the current viewport |
-| POST | `/input` | Inject InputEvent (`mouse_button` / `mouse_motion` / `key`) |
+| POST | `/input` | Inject a click, mouse-motion, or key event |
 
-Register custom GET endpoints from your project:
+Add your own:
 
 ```gdscript
-inspector.register_provider("/cards", func() -> Dictionary:
-    return {"cards": my_card_store.cards})
+inspector.register_provider("/inventory", func() -> Dictionary:
+    return {"items": player.inventory})
 ```
 
-The provider is a `Callable` returning a `Dictionary`; it gets serialized
-to JSON automatically.
+## Config reference
 
-## Configuration reference
-
-`godot-loop.toml` lives at the consuming project's repo root.  Search
-walks up from cwd, so any subdirectory works.
+`godot-loop.toml` (at your repo root):
 
 | Key | Default | What |
 |-----|---------|------|
-| `[project].path` | required | Path to the Godot project (dir containing `project.godot`), relative to the config file |
-| `[project].env_file` | `null` | KEY=VALUE file the loop sources (e.g. for `BACKEND_PORT`) |
-| `[health].url` | `null` | If set, `curl`'d before launch; non-2xx aborts |
-| `[health].timeout_seconds` | `5.0` | Health-check timeout |
-| `[e2e].launch_args` | `[]` | Extra args appended after `--`; `--api-base`/`--user-dir-tag` are added automatically |
+| `[project].path` | required | Path to your Godot project (the dir with `project.godot`) |
+| `[project].env_file` | `null` | A `.env` to source for `BACKEND_PORT` etc. |
+| `[health].url` | `null` | If set, must respond 2xx before launch |
+| `[e2e].launch_args` | `[]` | Extra flags appended after `--` |
 | `[e2e].log_markers` | `[]` | Strings that must all appear in stdout |
-| `[e2e].screenshot_after_ms` | `12000` | When to capture (windowed only) |
-| `[e2e].timeout_seconds` | `60` | Hard wall-clock timeout |
-| `[e2e].headless` | `false` | Force `--headless` (no screenshot possible) |
-| `[user_dir_tag].strategy` | `worktree-basename` | Or `fixed`; how `--user-dir-tag` is built |
+| `[e2e].screenshot_after_ms` | `12000` | When to capture |
+| `[e2e].timeout_seconds` | `60` | Wall-clock timeout |
+| `[e2e].headless` | `false` | Force `--headless` (no screenshot) |
+| `[user_dir_tag].strategy` | `worktree-basename` | Or `fixed` |
 | `[user_dir_tag].prefix` | `loop` | Prepended to the basename |
-| `[user_dir_tag].fixed` | `null` | Required when `strategy = "fixed"` |
-| `[hooks].pre_launch` | `null` | Script run before each launch (project-specific self-heal) |
-| `inspect_port` | `null` | Static inspector port (else `BACKEND_PORT + 100` from env_file) |
+| `[hooks].pre_launch` | `null` | Script run before every launch |
+| `inspect_port` | `null` | Static port; else `BACKEND_PORT + 100` |
 
 ## Layout
 
@@ -336,21 +291,15 @@ agentic-godot/
 │   ├── runners.py
 │   └── utils.py
 ├── examples/godot-loop.toml
-└── docs/INTEGRATING.md      # full integration walkthrough
+└── docs/INTEGRATING.md
 ```
 
-## Project-specific concerns
+## Project-specific stuff
 
-godot-loop deliberately doesn't know about:
-
-- Addon symlinks your project needs (e.g. third-party addons stored
-  outside the repo)
-- `class_name` cache rebuilds after edits
-- Auth-token minting for dev backends
-- Mode/profile/feature flags specific to your bootstrap
-
-Put all of it in a `[hooks].pre_launch` script.  See `docs/INTEGRATING.md`
-for the gaia consumer's example.
+godot-loop stays out of project-specific concerns — addon symlinks,
+class-cache rebuilds, dev-token minting, custom feature flags.  Put any
+of that in a script and point `[hooks].pre_launch` at it.  See
+`docs/INTEGRATING.md` for a worked example.
 
 ## Contributing
 

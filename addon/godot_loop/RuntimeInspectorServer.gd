@@ -14,8 +14,8 @@ class_name RuntimeInspectorServer
 #
 # Projects can register additional GET endpoints via register_provider():
 #
-#   inspector.register_provider("/cards", func() -> Dictionary:
-#       return {"cards": my_store.cards})
+#   inspector.register_provider("/state", func() -> Dictionary:
+#       return {"hp": player.hp, "mana": player.mana})
 #
 # The provider is a Callable returning a Dictionary; the inspector serializes
 # it to JSON and serves it on the given path.

@@ -3,15 +3,14 @@
 Drop-in Godot 4 addon that ships two runtime helpers:
 
 - `LoopLaunchConfig.gd` — parses standard CLI flags
-  (`--api-base=`, `--user-dir-tag=`, `--auto-load-campaign=`,
+  (`--api-base=`, `--access-token=`, `--user-dir-tag=`,
   `--exit-after-bootstrap`, `--screenshot-after-ms=`, `--screenshot-path=`,
-  `--inspect-port=`, `--access-token=`).  Use directly or extend with
-  project-specific flags.
+  `--inspect-port=`).  Use directly or extend with project-specific flags.
 
 - `RuntimeInspectorServer.gd` — localhost-only HTTP server that exposes
   `/healthz`, `/scene`, `/text`, `/viewport`, `/screenshot.png`, and
   `/input` (POST) on a port chosen by `--inspect-port`.  Project code
-  registers extra GET endpoints via `register_provider("/cards", ...)`.
+  registers extra GET endpoints via `register_provider("/state", ...)`.
 
 ## Install
 
