@@ -6,12 +6,11 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import requests
 
@@ -55,7 +54,7 @@ def _check_health(cfg: LoopConfig) -> None:
                 f"FAIL: backend health check at {url} returned {resp.status_code}"
             )
     except requests.RequestException as exc:
-        raise SystemExit(f"FAIL: backend health check at {url}: {exc}")
+        raise SystemExit(f"FAIL: backend health check at {url}: {exc}") from exc
     _print("    ok")
 
 
@@ -190,6 +189,64 @@ def run_smoke(cfg: LoopConfig, smoke_path: Path, *, timeout_seconds: int = 60) -
         str(smoke_path.relative_to(cfg.project_path)) if smoke_path.is_relative_to(cfg.project_path) else str(smoke_path),
     ]
     return subprocess.call(cmd, cwd=cfg.config_root, timeout=timeout_seconds)
+
+
+def run_smokes(cfg: LoopConfig, *, timeout_seconds: int = 60) -> int:
+    """Discover and run every *_smoke.gd under the project's smokes dir.
+
+    Defaults to `<project>/scripts/dev/`.  Override via [smokes].path /
+    [smokes].pattern in godot-loop.toml.
+    """
+    smokes_dir = cfg.project_path / cfg.smokes.path
+    if not smokes_dir.is_dir():
+        raise SystemExit(f"smokes dir not found: {smokes_dir}")
+    files = sorted(smokes_dir.glob(cfg.smokes.pattern))
+    if not files:
+        _print(f"WARN: no smokes matched {smokes_dir}/{cfg.smokes.pattern}")
+        return 0
+    _print(f"==> godot-loop run smokes ({len(files)} files in {smokes_dir})")
+    failed: list[Path] = []
+    for path in files:
+        rc = run_smoke(cfg, path, timeout_seconds=timeout_seconds)
+        if rc != 0:
+            failed.append(path)
+            _print(f"    FAIL  {path.name}  rc={rc}")
+        else:
+            _print(f"    ok    {path.name}")
+    if failed:
+        _print(f"==> {len(failed)} of {len(files)} smokes failed:")
+        for path in failed:
+            _print(f"    {path}")
+        return 1
+    _print(f"==> all {len(files)} smokes ok")
+    return 0
+
+
+def rebuild_class_cache(cfg: LoopConfig, *, quit_after: int = 200) -> int:
+    """Run a short editor-headless invocation to rebuild Godot's
+    .godot/global_script_class_cache.cfg.
+
+    Needed once per fresh checkout (or after adding a new class_name)
+    before runtime parses of class_name globals work.
+    """
+    godot = find_godot_binary()
+    _print(f"==> rebuild-class-cache: {cfg.project_path}")
+    cmd = [
+        godot,
+        "--headless",
+        "--editor",
+        "--quit-after",
+        str(quit_after),
+        "--path",
+        str(cfg.project_path),
+    ]
+    rc = subprocess.call(cmd, cwd=cfg.config_root)
+    cache = cfg.project_path / ".godot" / "global_script_class_cache.cfg"
+    if not cache.is_file():
+        _print(f"WARN: cache not produced at {cache}; runtime parses may fail")
+        return rc or 1
+    _print(f"    ok ({cache})")
+    return rc
 
 
 # ---------------------------------------------------------------------------

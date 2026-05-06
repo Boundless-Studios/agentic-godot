@@ -6,9 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__
+from . import __version__, runners
 from .config import load_config
-from . import runners
 
 
 def _add_config_arg(p: argparse.ArgumentParser) -> None:
@@ -49,6 +48,16 @@ def cmd_run_e2e(args: argparse.Namespace) -> int:
 def cmd_run_smoke(args: argparse.Namespace) -> int:
     cfg = _load(args)
     return runners.run_smoke(cfg, args.smoke_path, timeout_seconds=args.timeout)
+
+
+def cmd_run_smokes(args: argparse.Namespace) -> int:
+    cfg = _load(args)
+    return runners.run_smokes(cfg, timeout_seconds=args.timeout)
+
+
+def cmd_rebuild_class_cache(args: argparse.Namespace) -> int:
+    cfg = _load(args)
+    return runners.rebuild_class_cache(cfg, quit_after=args.quit_after)
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -120,6 +129,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_smoke.add_argument("smoke_path", type=Path)
     p_smoke.add_argument("--timeout", type=int, default=60)
     p_smoke.set_defaults(func=cmd_run_smoke)
+
+    p_smokes = run_sub.add_parser("smokes", help="Discover + run every *_smoke.gd under the smokes dir")
+    _add_config_arg(p_smokes)
+    p_smokes.add_argument("--timeout", type=int, default=60, help="Per-smoke timeout (seconds)")
+    p_smokes.set_defaults(func=cmd_run_smokes)
+
+    p_cache = sub.add_parser("rebuild-class-cache", help="Rebuild Godot's class_name lookup cache headlessly")
+    _add_config_arg(p_cache)
+    p_cache.add_argument("--quit-after", type=int, default=200, help="Editor ticks before quitting (default 200)")
+    p_cache.set_defaults(func=cmd_rebuild_class_cache)
 
     p_inspect = sub.add_parser("inspect", help="GET an endpoint from a running RuntimeInspectorServer")
     _add_config_arg(p_inspect)

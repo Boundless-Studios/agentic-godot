@@ -44,6 +44,12 @@ class HooksConfig:
 
 
 @dataclass
+class SmokesConfig:
+    path: str = "scripts/dev"
+    pattern: str = "*_smoke.gd"
+
+
+@dataclass
 class LoopConfig:
     project_path: Path
     env_file: Path | None = None
@@ -51,6 +57,7 @@ class LoopConfig:
     e2e: E2EConfig = field(default_factory=E2EConfig)
     user_dir_tag: UserDirTagConfig = field(default_factory=UserDirTagConfig)
     hooks: HooksConfig = field(default_factory=HooksConfig)
+    smokes: SmokesConfig = field(default_factory=SmokesConfig)
     inspect_port: int | None = None
     config_path: Path | None = None
     config_root: Path = field(default_factory=lambda: Path.cwd())
@@ -119,6 +126,12 @@ def load_config(start: Path | None = None, *, explicit: Path | None = None) -> L
     hooks_raw = raw.get("hooks", {})
     hooks = HooksConfig(pre_launch=hooks_raw.get("pre_launch"))
 
+    smokes_raw = raw.get("smokes", {})
+    smokes = SmokesConfig(
+        path=smokes_raw.get("path", "scripts/dev"),
+        pattern=smokes_raw.get("pattern", "*_smoke.gd"),
+    )
+
     inspect_port = raw.get("inspect_port")
 
     return LoopConfig(
@@ -128,6 +141,7 @@ def load_config(start: Path | None = None, *, explicit: Path | None = None) -> L
         e2e=e2e,
         user_dir_tag=udt,
         hooks=hooks,
+        smokes=smokes,
         inspect_port=int(inspect_port) if inspect_port is not None else None,
         config_path=path,
         config_root=root,

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "godot-loop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Closed-loop validation harness for Godot game clients"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,8 +23,13 @@ dependencies = [
   "requests>=2.31",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+dev = ["pytest>=7.0", "ruff>=0.1"]
+
 [project.scripts]
 godot-loop = "godot_loop.cli:main"
+godot-loop-mcp = "godot_loop.mcp_server:main"
 
 [project.urls]
 Source = "https://github.com/Boundless-Studios/agentic-godot"

@@ -328,12 +328,32 @@ After that the cache is on disk and the runtime works alone.
 The `/screenshot.png` endpoint also needs a windowed run — `--headless`
 has no viewport to capture from.
 
+## MCP server
+
+Run godot-loop as an MCP server so Claude / Codex / any MCP-aware agent can
+call its tools directly:
+
+```bash
+pip install 'godot-loop[mcp]'
+GODOT_LOOP_CONFIG=/path/to/godot-loop.toml godot-loop-mcp
+```
+
+Tools exposed: `inspect`, `scene`, `visible_text`, `viewport_info`,
+`screenshot`, `find_node`, `click`, `click_node`, `mouse_move`,
+`key_press`, `run_e2e`, `run_smoke`, `run_smokes`.
+
+`click_node("StartButton")` is the most useful one — it walks the scene
+tree to find a node by name, computes its center, and clicks it.  No
+hardcoded coordinates.
+
 ## CLI reference
 
 | Command | What it does |
 |---------|--------------|
 | `godot-loop run e2e` | Launch the game, wait for log markers, capture a screenshot, exit 0/1 |
 | `godot-loop run smoke <gd_path>` | Run one `*_smoke.gd` file headless |
+| `godot-loop run smokes` | Discover + run every `*_smoke.gd` under the smokes dir |
+| `godot-loop rebuild-class-cache` | Headlessly rebuild Godot's `class_name` lookup cache (one-shot fix for fresh checkouts) |
 | `godot-loop inspect --endpoint /...` | GET an endpoint from the running inspector |
 | `godot-loop trace --endpoint /...` | Poll endpoints, print only when something changed |
 | `godot-loop input <type>` | POST a click / mouse-move / keypress to the running game |
@@ -402,17 +422,21 @@ inspector.register_provider("/inventory", func() -> Dictionary:
 
 ```
 agentic-godot/
-├── addon/godot_loop/        # Godot 4 addon
+├── addon/godot_loop/                    # Godot 4 addon
 │   ├── LoopLaunchConfig.gd
 │   ├── RuntimeInspectorServer.gd
 │   ├── plugin.cfg
 │   └── plugin.gd
-├── src/godot_loop/          # Python CLI
+├── src/godot_loop/                      # Python CLI + MCP server
 │   ├── cli.py
 │   ├── config.py
+│   ├── mcp_server.py
 │   ├── runners.py
 │   └── utils.py
-├── examples/godot-loop.toml
+├── tests/                               # pytest
+├── examples/
+│   ├── godot-loop.toml                  # sample config
+│   └── godot_project/                   # minimal end-to-end demo
 └── docs/INTEGRATING.md
 ```
 

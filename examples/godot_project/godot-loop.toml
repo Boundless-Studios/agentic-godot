@@ -1,0 +1,17 @@
+# godot-loop config for the example project.  Run from this dir:
+#
+#   ln -s ../../addon/godot_loop addons/godot_loop
+#   godot-loop run e2e
+
+[project]
+path = "."
+
+[e2e]
+launch_args = ["--exit-after-bootstrap"]
+log_markers = ["ready"]
+screenshot_after_ms = 1500
+timeout_seconds = 30
+
+[user_dir_tag]
+strategy = "fixed"
+fixed = "godot-loop-example"
