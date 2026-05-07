@@ -97,18 +97,17 @@ mcp = FastMCP("godot-loop")
 def _do_inspect(endpoint: str) -> dict:
     """Implementation for the ``inspect`` MCP tool — extracted for unit testing.
 
-    JSON responses are returned as parsed dicts; non-JSON responses
-    (e.g. /healthz returns plain "ok") are wrapped as ``{"text": ...}``
-    so the tool never raises on text-typed endpoints.
+    Tries JSON; on parse failure (e.g. /healthz returns plain "ok") falls
+    back to ``{"text": ...}`` so the tool stays usable on text endpoints.
     """
     base = _inspector_base()
     url = f"{base}{endpoint if endpoint.startswith('/') else '/' + endpoint}"
     resp = requests.get(url, timeout=10.0)
     resp.raise_for_status()
-    content_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-    if content_type == "application/json":
+    try:
         return resp.json()
-    return {"text": resp.text, "content_type": content_type or "unknown"}
+    except ValueError:
+        return {"text": resp.text}
 
 
 @mcp.tool()
