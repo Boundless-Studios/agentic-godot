@@ -94,14 +94,30 @@ def _walk_scene(node: dict, name: str) -> dict | None:
 mcp = FastMCP("godot-loop")
 
 
+def _do_inspect(endpoint: str) -> dict:
+    """Implementation for the ``inspect`` MCP tool — extracted for unit testing.
+
+    Tries JSON; on parse failure (e.g. /healthz returns plain "ok") falls
+    back to ``{"text": ...}`` so the tool stays usable on text endpoints.
+    """
+    base = _inspector_base()
+    url = f"{base}{endpoint if endpoint.startswith('/') else '/' + endpoint}"
+    resp = requests.get(url, timeout=10.0)
+    resp.raise_for_status()
+    try:
+        return resp.json()
+    except ValueError:
+        return {"text": resp.text}
+
+
 @mcp.tool()
 def inspect(endpoint: str = "/scene") -> dict:
-    """GET a JSON endpoint from the running game's RuntimeInspectorServer.
+    """GET an endpoint from the running game's RuntimeInspectorServer.
 
     Common endpoints: /scene, /text, /viewport, /healthz, plus any
     project-registered providers (e.g. /state, /inventory, /cards).
     """
-    return _http_get_json(endpoint)
+    return _do_inspect(endpoint)
 
 
 @mcp.tool()
