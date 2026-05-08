@@ -5,12 +5,22 @@ class_name RuntimeInspectorServer
 # --inspect-port=N (or call setup() directly with a port) — when set, opens
 # 127.0.0.1:N and serves these read-only built-in endpoints:
 #
-#   GET  /healthz         -> "ok"
-#   GET  /scene           -> {root: {name, type, path, visible, children: [...]}}
-#   GET  /text            -> {items: [{path, type, text}, ...]}
-#   GET  /viewport        -> root_size, root_position, content_scale, display info
-#   GET  /screenshot.png  -> PNG of the current viewport
-#   POST /input           -> inject an InputEvent (mouse_button|mouse_motion|key)
+#   GET  /healthz                -> "ok"
+#   GET  /scene                  -> {root: {name, type, path, visible, children: [...]}}
+#                                    rooted at the SceneTree root (Window).
+#   GET  /scene_tree             -> same shape, rooted at get_tree().current_scene
+#                                    so headless drivers see only the active screen.
+#   GET  /text                   -> {items: [{path, type, text}, ...]}
+#   GET  /viewport               -> root_size, root_position, content_scale, display info
+#   GET  /screenshot.png         -> PNG of the current viewport
+#   GET  /press_button?path=...  -> emit Button.pressed by NodePath (BaseButton).
+#                                    Deterministic alternative to /input for
+#                                    headless e2e (no focus juggling).
+#   POST /input                  -> inject an InputEvent (mouse_button|mouse_motion|key)
+#
+# After listen succeeds the inspector reparents itself to get_tree().get_root()
+# so it survives change_scene_to_packed / change_scene_to_file calls — without
+# this, swapping out the host scene would free the inspector mid-test.
 #
 # Projects can register additional GET endpoints via register_provider():
 #
@@ -58,6 +68,24 @@ func _ready() -> void:
 		return
 	print("runtime_inspector_listening: http://127.0.0.1:%s" % _port)
 	set_process(true)
+	# Reparent to the SceneTree root so the inspector survives scene swaps —
+	# without this, when the host (e.g. Main.gd) gets freed by change_scene_*
+	# the inspector dies with it and the port stops responding mid-test.
+	# Deferred so we don't mutate the tree from inside the host's _ready.
+	var tree := get_tree()
+	if tree != null:
+		var root := tree.get_root()
+		if root != null and get_parent() != root:
+			call_deferred("_reparent_to_root", root)
+
+
+func _reparent_to_root(root: Node) -> void:
+	var parent := get_parent()
+	if parent == root or root == null:
+		return
+	if parent != null:
+		parent.remove_child(self)
+	root.add_child(self)
 
 
 func _process(_delta: float) -> void:
@@ -130,26 +158,81 @@ func _service(conn: Dictionary) -> bool:
 	return false
 
 
-func _handle_get(peer: StreamPeerTCP, path: String) -> void:
-	if _providers.has(path):
-		var provider: Callable = _providers[path]
+func _handle_get(peer: StreamPeerTCP, full_path: String) -> void:
+	# Split route from query string so /press_button?path=... matches /press_button.
+	var query_idx: int = full_path.find("?")
+	var route: String = full_path if query_idx < 0 else full_path.substr(0, query_idx)
+	var query_string: String = "" if query_idx < 0 else full_path.substr(query_idx + 1)
+
+	if _providers.has(route):
+		var provider: Callable = _providers[route]
 		if provider.is_valid():
 			var payload: Variant = provider.call()
 			_respond_json(peer, payload)
 			return
-	match path:
+	match route:
 		"/healthz":
 			_respond(peer, 200, "text/plain", "ok\n")
 		"/scene":
 			_respond_json(peer, _scene_dump())
+		"/scene_tree":
+			_respond_json(peer, _scene_tree_dump())
 		"/text":
 			_respond_json(peer, _visible_text())
 		"/screenshot.png":
 			_respond_png(peer, _screenshot_bytes())
 		"/viewport":
 			_respond_json(peer, _viewport_info())
+		"/press_button":
+			_handle_press_button(peer, _query_get(query_string, "path"))
 		_:
 			_respond(peer, 404, "text/plain", "not found")
+
+
+func _query_get(query_string: String, key: String) -> String:
+	for pair in query_string.split("&"):
+		var eq_idx: int = pair.find("=")
+		if eq_idx < 0:
+			continue
+		var k: String = pair.substr(0, eq_idx)
+		if k == key:
+			return pair.substr(eq_idx + 1).uri_decode()
+	return ""
+
+
+# /press_button — emit Button.pressed by NodePath. The /input route can
+# reach the same end-state but only when the button is focused; this is
+# a deterministic alternative for headless e2e drivers.
+func _handle_press_button(peer: StreamPeerTCP, node_path: String) -> void:
+	if node_path == "":
+		_respond(peer, 400, "application/json", JSON.stringify({"ok": false, "error": "missing path query parameter"}))
+		return
+	var root: Node = _root_node()
+	if root == null:
+		_respond(peer, 503, "application/json", JSON.stringify({"ok": false, "error": "no tree root"}))
+		return
+	var node: Node = root.get_node_or_null(NodePath(node_path))
+	if node == null:
+		_respond(peer, 404, "application/json", JSON.stringify({"ok": false, "error": "node not found", "path": node_path}))
+		return
+	if not (node is BaseButton):
+		_respond(peer, 422, "application/json", JSON.stringify({"ok": false, "error": "not a Button (or BaseButton subclass)", "path": node_path, "type": node.get_class()}))
+		return
+	var btn: BaseButton = node
+	btn.pressed.emit()
+	_respond_json(peer, {"ok": true, "node": str(node.get_path()), "method": "signal", "type": node.get_class()})
+
+
+# /scene_tree — like /scene but rooted at the *current scene* rather than
+# the SceneTree root window, so test drivers see only the active screen.
+func _scene_tree_dump() -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {"available": false}
+	var current: Node = tree.current_scene
+	if current == null:
+		return {"available": false}
+	return {"available": true, "root": _node_to_dict(current, 8)}
 
 
 func _content_length_from_headers(header_text: String) -> int:
