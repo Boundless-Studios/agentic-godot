@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import base64
 import os
+import subprocess
+import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +34,11 @@ from . import runners
 from .config import LoopConfig, load_config, resolve_inspect_port
 from .utils import source_env_file
 
+# Module-level state for the editor-less harness: launch_runtime stores the
+# Popen + port here, and kill_runtime / wait_for_route consult it. None means
+# nothing has been launched in this MCP-server process.
+_LAUNCHED: dict[str, Any] | None = None
+
 
 def _load_cfg() -> LoopConfig:
     explicit = os.environ.get("GODOT_LOOP_CONFIG")
@@ -41,6 +49,11 @@ def _load_cfg() -> LoopConfig:
 
 
 def _inspector_base() -> str:
+    # When launch_runtime forked a process in this MCP-server session, all
+    # subsequent inspect calls target THAT process — even if godot-loop.toml
+    # would otherwise resolve to a different port.
+    if _LAUNCHED is not None:
+        return _LAUNCHED["base_url"]
     cfg = _load_cfg()
     env = source_env_file(cfg.env_file) if cfg.env_file else {}
     port = resolve_inspect_port(cfg, env)
@@ -279,6 +292,190 @@ def run_smokes(timeout_seconds: int = 60) -> dict:
     cfg = _load_cfg()
     rc = runners.run_smokes(cfg, timeout_seconds=timeout_seconds)
     return {"exit_code": rc}
+
+
+# ---------------------------------------------------------------------------
+# BOU-891 — editor-less e2e harness tools.
+# launch_runtime forks a Godot client pointed at a project; the others wrap
+# the matching inspector routes (or its own subprocess handle for kill).
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def launch_runtime(
+    repo_path: str,
+    api_base: str | None = None,
+    mode: str | None = None,
+    inspect_port: int | None = None,
+    extra_args: list[str] | None = None,
+    pre_dash_args: list[str] | None = None,
+    headless: bool = False,
+    wait_seconds: float = 30.0,
+    godot_binary: str = "godot",
+) -> dict:
+    """Fork a Godot client pointed at a project; wait until /healthz returns 200.
+
+    Returns {pid, inspect_port, base_url, healthy, elapsed_seconds}. The Popen
+    handle is stashed in module state so kill_runtime() can find it later.
+
+    Argument layout matches Godot's CLI:
+        godot [pre_dash_args] --headless? --path repo_path -- [project_user_args]
+
+    pre_dash_args: forwarded to Godot itself (e.g. ["--script", "smoke.gd"]).
+    extra_args:    forwarded to the project (consumed via OS.get_cmdline_user_args
+                   alongside --inspect-port / --api-base / --mode).
+    """
+    global _LAUNCHED
+    project = os.path.abspath(repo_path)
+    if inspect_port is None:
+        try:
+            cfg = _load_cfg()
+            env = source_env_file(cfg.env_file) if cfg.env_file else {}
+            inspect_port = resolve_inspect_port(cfg, env) or 9876
+        except Exception:
+            inspect_port = 9876
+
+    cmd: list[str] = [godot_binary]
+    if headless:
+        cmd.append("--headless")
+    if pre_dash_args:
+        cmd.extend(pre_dash_args)
+    cmd.extend(["--path", project, "--"])
+    cmd.append(f"--inspect-port={inspect_port}")
+    if api_base:
+        cmd.append(f"--api-base={api_base}")
+    if mode:
+        cmd.append(f"--mode={mode}")
+    if extra_args:
+        cmd.extend(extra_args)
+
+    popen = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    base_url = f"http://127.0.0.1:{inspect_port}"
+    _LAUNCHED = {
+        "pid": popen.pid,
+        "inspect_port": inspect_port,
+        "base_url": base_url,
+        "popen": popen,
+    }
+
+    health = wait_for_route(path="/healthz", timeout_seconds=wait_seconds)
+    return {
+        "pid": popen.pid,
+        "inspect_port": inspect_port,
+        "base_url": base_url,
+        "healthy": bool(health.get("ok")),
+        "elapsed_seconds": health.get("elapsed_seconds"),
+    }
+
+
+@mcp.tool()
+def kill_runtime(pid: int | None = None) -> dict:
+    """Terminate the previously-launched runtime (SIGTERM, then SIGKILL after 5s)."""
+    global _LAUNCHED
+    if _LAUNCHED is None:
+        return {"ok": False, "error": "no runtime launched in this MCP process"}
+    if pid is not None and pid != _LAUNCHED["pid"]:
+        return {
+            "ok": False,
+            "error": f"pid mismatch: stored {_LAUNCHED['pid']}, asked {pid}",
+        }
+    popen = _LAUNCHED["popen"]
+    stored_pid = _LAUNCHED["pid"]
+    timed_out = False
+    try:
+        popen.terminate()
+        try:
+            exit_code = popen.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            popen.kill()
+            exit_code = popen.wait(timeout=2)
+            timed_out = True
+    finally:
+        _LAUNCHED = None
+    return {"ok": True, "pid": stored_pid, "exit_code": exit_code, "timed_out": timed_out}
+
+
+@mcp.tool()
+def wait_for_route(
+    path: str,
+    timeout_seconds: float = 10.0,
+    interval_seconds: float = 0.2,
+) -> dict:
+    """Poll an inspector route until it returns HTTP 200 or timeout elapses.
+
+    Falls back to _inspector_base() (godot-loop.toml-driven) when no runtime
+    has been launched in-process — useful for attaching to a manually-launched
+    game-client (e.g. from `gmake game-client-mcp`).
+    """
+    base = _inspector_base()
+    url = f"{base}{path if path.startswith('/') else '/' + path}"
+    start = time.monotonic()
+    deadline = start + timeout_seconds
+    attempts = 0
+    last_status: int | None = None
+    last_error: str | None = None
+    while True:
+        attempts += 1
+        try:
+            resp = requests.get(url, timeout=2.0)
+            last_status = resp.status_code
+            if resp.status_code == 200:
+                return {
+                    "ok": True,
+                    "elapsed_seconds": time.monotonic() - start,
+                    "attempts": attempts,
+                    "last_status": resp.status_code,
+                }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(interval_seconds)
+    out: dict[str, Any] = {
+        "ok": False,
+        "elapsed_seconds": time.monotonic() - start,
+        "attempts": attempts,
+    }
+    if last_status is not None:
+        out["last_status"] = last_status
+    if last_error is not None:
+        out["last_error"] = last_error
+    return out
+
+
+@mcp.tool()
+def press_button(node_path: str) -> dict:
+    """Find a Button at the given NodePath and emit its `pressed` signal.
+
+    More reliable than /input for headless drivers: emits the signal directly
+    so handlers fire whether or not the button has keyboard focus.
+    """
+    encoded = urllib.parse.quote(node_path, safe="")
+    return _http_get_json(f"/press_button?path={encoded}")
+
+
+@mcp.tool()
+def get_state() -> dict:
+    """GET /state — the project-registered inspector provider.
+
+    Projects register this via inspector.register_provider("/state", ...);
+    the payload shape is project-specific (combat: combatants/round/log; etc).
+    """
+    return _http_get_json("/state")
+
+
+@mcp.tool()
+def get_scene_tree() -> dict:
+    """GET /scene_tree — current scene's node hierarchy (rooted at current_scene).
+
+    Distinct from /scene which dumps the full SceneTree root (Window). Used to
+    discover NodePaths for press_button without hardcoding them in tests.
+    """
+    return _http_get_json("/scene_tree")
 
 
 def main() -> None:  # pragma: no cover
