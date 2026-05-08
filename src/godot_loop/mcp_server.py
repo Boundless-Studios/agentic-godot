@@ -49,6 +49,11 @@ def _load_cfg() -> LoopConfig:
 
 
 def _inspector_base() -> str:
+    # When launch_runtime forked a process in this MCP-server session, all
+    # subsequent inspect calls target THAT process — even if godot-loop.toml
+    # would otherwise resolve to a different port.
+    if _LAUNCHED is not None:
+        return _LAUNCHED["base_url"]
     cfg = _load_cfg()
     env = source_env_file(cfg.env_file) if cfg.env_file else {}
     port = resolve_inspect_port(cfg, env)
@@ -303,6 +308,7 @@ def launch_runtime(
     mode: str | None = None,
     inspect_port: int | None = None,
     extra_args: list[str] | None = None,
+    pre_dash_args: list[str] | None = None,
     headless: bool = False,
     wait_seconds: float = 30.0,
     godot_binary: str = "godot",
@@ -311,6 +317,13 @@ def launch_runtime(
 
     Returns {pid, inspect_port, base_url, healthy, elapsed_seconds}. The Popen
     handle is stashed in module state so kill_runtime() can find it later.
+
+    Argument layout matches Godot's CLI:
+        godot [pre_dash_args] --headless? --path repo_path -- [project_user_args]
+
+    pre_dash_args: forwarded to Godot itself (e.g. ["--script", "smoke.gd"]).
+    extra_args:    forwarded to the project (consumed via OS.get_cmdline_user_args
+                   alongside --inspect-port / --api-base / --mode).
     """
     global _LAUNCHED
     project = os.path.abspath(repo_path)
@@ -325,6 +338,8 @@ def launch_runtime(
     cmd: list[str] = [godot_binary]
     if headless:
         cmd.append("--headless")
+    if pre_dash_args:
+        cmd.extend(pre_dash_args)
     cmd.extend(["--path", project, "--"])
     cmd.append(f"--inspect-port={inspect_port}")
     if api_base:
@@ -396,7 +411,7 @@ def wait_for_route(
     has been launched in-process — useful for attaching to a manually-launched
     game-client (e.g. from `gmake game-client-mcp`).
     """
-    base = _LAUNCHED["base_url"] if _LAUNCHED is not None else _inspector_base()
+    base = _inspector_base()
     url = f"{base}{path if path.startswith('/') else '/' + path}"
     start = time.monotonic()
     deadline = start + timeout_seconds

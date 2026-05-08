@@ -238,6 +238,43 @@ def test_launch_runtime_invokes_godot_with_inspect_port_and_api_base(
     assert result["inspect_port"] == 9876
 
 
+def test_launch_runtime_pre_dash_args_go_before_double_dash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pre_dash_args must land BEFORE `--` so Godot consumes them, not the project."""
+    captured: dict[str, object] = {}
+
+    def fake_popen(argv: list[str], **kwargs: object) -> _FakePopen:
+        captured["argv"] = argv
+        return _FakePopen(argv, **kwargs)
+
+    monkeypatch.setattr(mcp_server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        mcp_server,
+        "wait_for_route",
+        lambda path, timeout_seconds=30.0, interval_seconds=0.2: {
+            "ok": True, "elapsed_seconds": 0.0, "attempts": 1, "last_status": 200,
+        },
+    )
+
+    mcp_server.launch_runtime(
+        repo_path="/x",
+        inspect_port=9000,
+        pre_dash_args=["--script", "smoke.gd"],
+    )
+
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    sep = argv.index("--")
+    pre = argv[:sep]
+    post = argv[sep + 1:]
+    assert "--script" in pre
+    assert "smoke.gd" in pre
+    # And --inspect-port stays on the project side.
+    assert any(a.startswith("--inspect-port=") for a in post)
+    assert not any(a.startswith("--inspect-port=") for a in pre)
+
+
 def test_kill_runtime_terminates_launched_process(monkeypatch: pytest.MonkeyPatch) -> None:
     """kill_runtime terminates the previously-launched process."""
     fake = _FakePopen(["godot", "--path", "/x"], )
