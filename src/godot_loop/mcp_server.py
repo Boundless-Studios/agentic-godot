@@ -307,6 +307,7 @@ def launch_runtime(
     api_base: str | None = None,
     mode: str | None = None,
     inspect_port: int | None = None,
+    access_token: str | None = None,
     extra_args: list[str] | None = None,
     pre_dash_args: list[str] | None = None,
     headless: bool = False,
@@ -324,6 +325,10 @@ def launch_runtime(
     pre_dash_args: forwarded to Godot itself (e.g. ["--script", "smoke.gd"]).
     extra_args:    forwarded to the project (consumed via OS.get_cmdline_user_args
                    alongside --inspect-port / --api-base / --mode).
+    access_token:  short-hand for adding `--access-token=<value>` to the project
+                   args. Convenience for the common case of launching against
+                   a backend that requires bearer auth; the project decides how
+                   it consumes the flag.
     """
     global _LAUNCHED
     project = os.path.abspath(repo_path)
@@ -346,6 +351,8 @@ def launch_runtime(
         cmd.append(f"--api-base={api_base}")
     if mode:
         cmd.append(f"--mode={mode}")
+    if access_token:
+        cmd.append(f"--access-token={access_token}")
     if extra_args:
         cmd.extend(extra_args)
 
@@ -456,6 +463,58 @@ def press_button(node_path: str) -> dict:
     """
     encoded = urllib.parse.quote(node_path, safe="")
     return _http_get_json(f"/press_button?path={encoded}")
+
+
+@mcp.tool()
+def signal_emit(
+    node_path: str,
+    signal_name: str,
+    args: list | None = None,
+) -> dict:
+    """Emit an arbitrary signal on a node by NodePath.
+
+    Use when `press_button` doesn't fit — e.g. the player-equivalent action
+    is firing a custom signal on a non-BaseButton node (a card's `selected`,
+    a menu item's `chosen`, a dialog row's `activated`).
+
+    `args` is a list of JSON-native values passed positionally to the signal
+    (must match the signal's declared signature on the receiver side). For
+    signals with complex Godot types (Vector2/3, Resource refs), serialize
+    on the caller side or rely on the receiver to coerce.
+
+    Returns {ok, path, signal, args_count} on success, or {ok: false, error}
+    when the node or signal doesn't exist.
+    """
+    return _http_post_json(
+        "/emit_signal",
+        {"path": node_path, "signal": signal_name, "args": args or []},
+    )
+
+
+@mcp.tool()
+def node_properties(node_path: str, names: list[str] | None = None) -> dict:
+    """Read live property values off a node by NodePath.
+
+    Use for observing runtime state that isn't surfaced by `get_state()` —
+    any autoload's `var` / `@export` field, a UI panel's current label text,
+    or any script-defined property on an active node. Complements
+    `get_scene_tree` (which only dumps Control visibility / position) with
+    arbitrary property access.
+
+    `names` is an optional list of property names. If omitted, returns every
+    script-exported property on the node's attached script (excludes inherited
+    engine properties to keep payloads small).
+
+    Values that aren't JSON-native are coerced: Vector2/3/4 → {x,y[,z][,w]},
+    Color → {r,g,b,a}, Rect2 → {x,y,w,h}, NodePath/StringName → string,
+    Object refs → "<ClassName#instance_id>".
+
+    Returns {ok, path, type, properties: {name: value, ...}, missing?: [...]}.
+    """
+    encoded_path = urllib.parse.quote(node_path, safe="")
+    names_csv = ",".join(names) if names else ""
+    encoded_names = urllib.parse.quote(names_csv, safe=",")
+    return _http_get_json(f"/node_properties?path={encoded_path}&names={encoded_names}")
 
 
 @mcp.tool()

@@ -297,3 +297,154 @@ def test_kill_runtime_terminates_launched_process(monkeypatch: pytest.MonkeyPatc
     assert fake._terminated is True
     assert result["ok"] is True
     assert result["pid"] == 12345
+
+
+# ---------------------------------------------------------------------------
+# feat/signal-emit-node-properties — signal_emit + node_properties + first-class
+# launch_runtime args (access_token / target_campaign_id).
+# ---------------------------------------------------------------------------
+
+
+def _patch_inspector_post(
+    monkeypatch: pytest.MonkeyPatch, response: _FakeResponse,
+) -> list[tuple[str, dict]]:
+    """Stub requests.post; return list capturing (url, json_payload) hits."""
+    posts: list[tuple[str, dict]] = []
+
+    def fake_post(url: str, json: dict, timeout: float = 5.0) -> _FakeResponse:
+        posts.append((url, json))
+        return response
+
+    monkeypatch.setattr(mcp_server, "_inspector_base", lambda: "http://127.0.0.1:9999")
+    monkeypatch.setattr(mcp_server.requests, "post", fake_post)
+    return posts
+
+
+def test_signal_emit_posts_path_signal_and_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    """signal_emit POSTs {path, signal, args} to /emit_signal."""
+    posts = _patch_inspector_post(
+        monkeypatch,
+        _FakeResponse('{"ok": true, "path": "/root/Menu/Card", "signal": "selected", "args_count": 1}'),
+    )
+
+    result = mcp_server.signal_emit(
+        node_path="/root/Menu/Card",
+        signal_name="selected",
+        args=["item-42"],
+    )
+
+    assert posts == [(
+        "http://127.0.0.1:9999/emit_signal",
+        {"path": "/root/Menu/Card", "signal": "selected", "args": ["item-42"]},
+    )]
+    assert result["ok"] is True
+    assert result["signal"] == "selected"
+
+
+def test_signal_emit_omitting_args_sends_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """signal_emit with no args still sends args=[] so the server has a stable shape."""
+    posts = _patch_inspector_post(
+        monkeypatch,
+        _FakeResponse('{"ok": true, "args_count": 0}'),
+    )
+
+    mcp_server.signal_emit(node_path="/root/A/B", signal_name="ready")
+
+    assert posts[0][1] == {"path": "/root/A/B", "signal": "ready", "args": []}
+
+
+def test_node_properties_hits_inspector_route_with_path_and_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """node_properties GETs /node_properties?path=...&names=... with URL-encoded path."""
+    urls = _patch_inspector(
+        monkeypatch,
+        _FakeResponse(
+            '{"ok": true, "path": "/root/GameState", "type": "Node",'
+            ' "properties": {"current_phase": "ready", "is_paused": false}}'
+        ),
+    )
+
+    result = mcp_server.node_properties(
+        node_path="/root/GameState",
+        names=["current_phase", "is_paused"],
+    )
+
+    assert len(urls) == 1
+    url = urls[0]
+    assert url.startswith("http://127.0.0.1:9999/node_properties")
+    assert "path=%2Froot%2FGameState" in url
+    assert "names=current_phase%2Cis_paused" in url or "names=current_phase,is_paused" in url
+    assert result["properties"]["current_phase"] == "ready"
+    assert result["properties"]["is_paused"] is False
+
+
+def test_node_properties_without_names_omits_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """node_properties(node_path=...) with no names sends names= (empty) so server returns all exports."""
+    urls = _patch_inspector(
+        monkeypatch,
+        _FakeResponse('{"ok": true, "properties": {}}'),
+    )
+
+    mcp_server.node_properties(node_path="/root/Store")
+
+    assert len(urls) == 1
+    # Empty names param signals "all exported properties" to the server.
+    assert "names=" in urls[0]
+
+
+def test_launch_runtime_includes_access_token_when_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """access_token becomes --access-token=<value> after the `--` separator."""
+    captured: dict[str, object] = {}
+
+    def fake_popen(argv: list[str], **kwargs: object) -> _FakePopen:
+        captured["argv"] = argv
+        return _FakePopen(argv, **kwargs)
+
+    monkeypatch.setattr(mcp_server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        mcp_server,
+        "wait_for_route",
+        lambda path, timeout_seconds=30.0, interval_seconds=0.2: {
+            "ok": True, "elapsed_seconds": 0.0, "attempts": 1, "last_status": 200,
+        },
+    )
+
+    mcp_server.launch_runtime(
+        repo_path="/x",
+        inspect_port=9000,
+        access_token="eyJabc.def",
+    )
+
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    sep = argv.index("--")
+    project_args = argv[sep + 1:]
+    assert "--access-token=eyJabc.def" in project_args
+
+
+def test_launch_runtime_omits_access_token_when_not_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No access_token → --access-token flag absent from argv."""
+    captured: dict[str, object] = {}
+
+    def fake_popen(argv: list[str], **kwargs: object) -> _FakePopen:
+        captured["argv"] = argv
+        return _FakePopen(argv, **kwargs)
+
+    monkeypatch.setattr(mcp_server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        mcp_server,
+        "wait_for_route",
+        lambda path, timeout_seconds=30.0, interval_seconds=0.2: {
+            "ok": True, "elapsed_seconds": 0.0, "attempts": 1, "last_status": 200,
+        },
+    )
+
+    mcp_server.launch_runtime(repo_path="/x", inspect_port=9000)
+
+    argv = captured["argv"]
+    assert not any(a.startswith("--access-token=") for a in argv)
