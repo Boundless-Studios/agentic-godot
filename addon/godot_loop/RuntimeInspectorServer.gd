@@ -18,15 +18,15 @@ class_name RuntimeInspectorServer
 #                                    headless e2e (no focus juggling).
 #   GET  /node_properties?path=...&names=a,b,c
 #                                -> read live property values off a node by
-#                                    NodePath. Use for inspecting store state
-#                                    or any non-Control property at runtime.
-#                                    `names` is optional; if omitted, returns
-#                                    the node's script-exported properties.
+#                                    NodePath. Use for inspecting autoload
+#                                    state or any non-Control script property
+#                                    at runtime. `names` is optional; if
+#                                    omitted, returns the node's
+#                                    script-exported properties.
 #   POST /emit_signal            -> emit an arbitrary signal on a node. Body:
 #                                    {"path": "...", "signal": "name", "args": [...]}.
 #                                    Use when /press_button doesn't fit — e.g.
-#                                    a custom signal like `QuestBoardCard.selected`
-#                                    that isn't a BaseButton press.
+#                                    a custom signal on a non-BaseButton node.
 #   POST /input                  -> inject an InputEvent (mouse_button|mouse_motion|key)
 #
 # After listen succeeds the inspector reparents itself to get_tree().get_root()
@@ -241,8 +241,8 @@ func _handle_press_button(peer: StreamPeerTCP, node_path: String) -> void:
 # /node_properties — read live property values off a node by NodePath.
 #
 # Use when /scene_tree's per-node visibility/position dump isn't enough —
-# e.g. inspecting a state-store autoload's `current_phase`, a CardPlaybackStore's
-# `position`/`size`, or any @export var on a custom script.
+# e.g. inspecting an autoload singleton's current state, a panel's runtime
+# text, or any @export var on a custom script.
 #
 # `names` is an optional comma-separated list. If empty, returns every
 # script-exported property (var declared in the node's attached script).

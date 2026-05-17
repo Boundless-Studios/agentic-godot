@@ -308,7 +308,6 @@ def launch_runtime(
     mode: str | None = None,
     inspect_port: int | None = None,
     access_token: str | None = None,
-    target_campaign_id: str | None = None,
     extra_args: list[str] | None = None,
     pre_dash_args: list[str] | None = None,
     headless: bool = False,
@@ -327,12 +326,9 @@ def launch_runtime(
     extra_args:    forwarded to the project (consumed via OS.get_cmdline_user_args
                    alongside --inspect-port / --api-base / --mode).
     access_token:  short-hand for adding `--access-token=<value>` to the project
-                   args. Use when launching against a backend that requires auth
-                   (gaia-free convention — token minted via the project's dev
-                   token script).
-    target_campaign_id: short-hand for `--target-campaign-id=<value>`. Pins the
-                   game to resume / drive a specific campaign instead of the
-                   default Continue Adventure target.
+                   args. Convenience for the common case of launching against
+                   a backend that requires bearer auth; the project decides how
+                   it consumes the flag.
     """
     global _LAUNCHED
     project = os.path.abspath(repo_path)
@@ -357,8 +353,6 @@ def launch_runtime(
         cmd.append(f"--mode={mode}")
     if access_token:
         cmd.append(f"--access-token={access_token}")
-    if target_campaign_id:
-        cmd.append(f"--target-campaign-id={target_campaign_id}")
     if extra_args:
         cmd.extend(extra_args)
 
@@ -479,10 +473,9 @@ def signal_emit(
 ) -> dict:
     """Emit an arbitrary signal on a node by NodePath.
 
-    Use when `press_button` doesn't fit — i.e. the action a player would
-    take is to fire a custom signal on a non-BaseButton node. Example:
-    `QuestBoardCard.selected` in the gaia-free game-client, which the React
-    side wires to a card click but the Godot side surfaces as a direct signal.
+    Use when `press_button` doesn't fit — e.g. the player-equivalent action
+    is firing a custom signal on a non-BaseButton node (a card's `selected`,
+    a menu item's `chosen`, a dialog row's `activated`).
 
     `args` is a list of JSON-native values passed positionally to the signal
     (must match the signal's declared signature on the receiver side). For
@@ -503,10 +496,10 @@ def node_properties(node_path: str, names: list[str] | None = None) -> dict:
     """Read live property values off a node by NodePath.
 
     Use for observing runtime state that isn't surfaced by `get_state()` —
-    e.g. an autoload store's `current_phase`, a `CardPlaybackStore.position`,
-    or any `@export` / `var` on a custom script. Complements `get_scene_tree`
-    (which only dumps Control visibility/position) with arbitrary property
-    access.
+    any autoload's `var` / `@export` field, a UI panel's current label text,
+    or any script-defined property on an active node. Complements
+    `get_scene_tree` (which only dumps Control visibility / position) with
+    arbitrary property access.
 
     `names` is an optional list of property names. If omitted, returns every
     script-exported property on the node's attached script (excludes inherited

@@ -324,18 +324,18 @@ def test_signal_emit_posts_path_signal_and_args(monkeypatch: pytest.MonkeyPatch)
     """signal_emit POSTs {path, signal, args} to /emit_signal."""
     posts = _patch_inspector_post(
         monkeypatch,
-        _FakeResponse('{"ok": true, "path": "/root/Q/Card", "signal": "selected", "args_count": 1}'),
+        _FakeResponse('{"ok": true, "path": "/root/Menu/Card", "signal": "selected", "args_count": 1}'),
     )
 
     result = mcp_server.signal_emit(
-        node_path="/root/Q/Card",
+        node_path="/root/Menu/Card",
         signal_name="selected",
-        args=["quest_abc123"],
+        args=["item-42"],
     )
 
     assert posts == [(
         "http://127.0.0.1:9999/emit_signal",
-        {"path": "/root/Q/Card", "signal": "selected", "args": ["quest_abc123"]},
+        {"path": "/root/Menu/Card", "signal": "selected", "args": ["item-42"]},
     )]
     assert result["ok"] is True
     assert result["signal"] == "selected"
@@ -360,23 +360,23 @@ def test_node_properties_hits_inspector_route_with_path_and_names(
     urls = _patch_inspector(
         monkeypatch,
         _FakeResponse(
-            '{"ok": true, "path": "/root/QuestStateStore", "type": "Node",'
-            ' "properties": {"current_phase": "at_jim", "advance_ready": false}}'
+            '{"ok": true, "path": "/root/GameState", "type": "Node",'
+            ' "properties": {"current_phase": "ready", "is_paused": false}}'
         ),
     )
 
     result = mcp_server.node_properties(
-        node_path="/root/QuestStateStore",
-        names=["current_phase", "advance_ready"],
+        node_path="/root/GameState",
+        names=["current_phase", "is_paused"],
     )
 
     assert len(urls) == 1
     url = urls[0]
     assert url.startswith("http://127.0.0.1:9999/node_properties")
-    assert "path=%2Froot%2FQuestStateStore" in url
-    assert "names=current_phase%2Cadvance_ready" in url or "names=current_phase,advance_ready" in url
-    assert result["properties"]["current_phase"] == "at_jim"
-    assert result["properties"]["advance_ready"] is False
+    assert "path=%2Froot%2FGameState" in url
+    assert "names=current_phase%2Cis_paused" in url or "names=current_phase,is_paused" in url
+    assert result["properties"]["current_phase"] == "ready"
+    assert result["properties"]["is_paused"] is False
 
 
 def test_node_properties_without_names_omits_filter(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -416,7 +416,6 @@ def test_launch_runtime_includes_access_token_when_provided(
         repo_path="/x",
         inspect_port=9000,
         access_token="eyJabc.def",
-        target_campaign_id="campaign_1044",
     )
 
     argv = captured["argv"]
@@ -424,13 +423,12 @@ def test_launch_runtime_includes_access_token_when_provided(
     sep = argv.index("--")
     project_args = argv[sep + 1:]
     assert "--access-token=eyJabc.def" in project_args
-    assert "--target-campaign-id=campaign_1044" in project_args
 
 
-def test_launch_runtime_omits_optional_args_when_not_provided(
+def test_launch_runtime_omits_access_token_when_not_provided(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No access_token / target_campaign_id → those flags are absent from argv."""
+    """No access_token → --access-token flag absent from argv."""
     captured: dict[str, object] = {}
 
     def fake_popen(argv: list[str], **kwargs: object) -> _FakePopen:
@@ -450,4 +448,3 @@ def test_launch_runtime_omits_optional_args_when_not_provided(
 
     argv = captured["argv"]
     assert not any(a.startswith("--access-token=") for a in argv)
-    assert not any(a.startswith("--target-campaign-id=") for a in argv)
