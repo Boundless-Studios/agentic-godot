@@ -16,6 +16,17 @@ class_name RuntimeInspectorServer
 #   GET  /press_button?path=...  -> emit Button.pressed by NodePath (BaseButton).
 #                                    Deterministic alternative to /input for
 #                                    headless e2e (no focus juggling).
+#   GET  /node_properties?path=...&names=a,b,c
+#                                -> read live property values off a node by
+#                                    NodePath. Use for inspecting store state
+#                                    or any non-Control property at runtime.
+#                                    `names` is optional; if omitted, returns
+#                                    the node's script-exported properties.
+#   POST /emit_signal            -> emit an arbitrary signal on a node. Body:
+#                                    {"path": "...", "signal": "name", "args": [...]}.
+#                                    Use when /press_button doesn't fit — e.g.
+#                                    a custom signal like `QuestBoardCard.selected`
+#                                    that isn't a BaseButton press.
 #   POST /input                  -> inject an InputEvent (mouse_button|mouse_motion|key)
 #
 # After listen succeeds the inspector reparents itself to get_tree().get_root()
@@ -151,6 +162,8 @@ func _service(conn: Dictionary) -> bool:
 		match path:
 			"/input":
 				_handle_input_post(peer, body_text)
+			"/emit_signal":
+				_handle_emit_signal(peer, body_text)
 			_:
 				_respond(peer, 404, "text/plain", "not found")
 	else:
@@ -185,6 +198,8 @@ func _handle_get(peer: StreamPeerTCP, full_path: String) -> void:
 			_respond_json(peer, _viewport_info())
 		"/press_button":
 			_handle_press_button(peer, _query_get(query_string, "path"))
+		"/node_properties":
+			_handle_node_properties(peer, _query_get(query_string, "path"), _query_get(query_string, "names"))
 		_:
 			_respond(peer, 404, "text/plain", "not found")
 
@@ -221,6 +236,167 @@ func _handle_press_button(peer: StreamPeerTCP, node_path: String) -> void:
 	var btn: BaseButton = node
 	btn.pressed.emit()
 	_respond_json(peer, {"ok": true, "node": str(node.get_path()), "method": "signal", "type": node.get_class()})
+
+
+# /node_properties — read live property values off a node by NodePath.
+#
+# Use when /scene_tree's per-node visibility/position dump isn't enough —
+# e.g. inspecting a state-store autoload's `current_phase`, a CardPlaybackStore's
+# `position`/`size`, or any @export var on a custom script.
+#
+# `names` is an optional comma-separated list. If empty, returns every
+# script-exported property (var declared in the node's attached script).
+# Values that aren't natively JSON-serializable (Vector2, Color, Object refs)
+# are converted to dicts / strings via _serialize_value.
+func _handle_node_properties(peer: StreamPeerTCP, node_path: String, names_csv: String) -> void:
+	if node_path == "":
+		_respond(peer, 400, "application/json", JSON.stringify({"ok": false, "error": "missing path query parameter"}))
+		return
+	var root: Node = _root_node()
+	if root == null:
+		_respond(peer, 503, "application/json", JSON.stringify({"ok": false, "error": "no tree root"}))
+		return
+	var node: Node = root.get_node_or_null(NodePath(node_path))
+	if node == null:
+		_respond(peer, 404, "application/json", JSON.stringify({"ok": false, "error": "node not found", "path": node_path}))
+		return
+
+	var names: Array = []
+	if names_csv != "":
+		for raw in names_csv.split(","):
+			var trimmed: String = raw.strip_edges()
+			if trimmed != "":
+				names.append(trimmed)
+	else:
+		# Default: every script-exported property on the attached script.
+		# (PROPERTY_USAGE_SCRIPT_VARIABLE catches @export and `var` declarations.)
+		for prop in node.get_property_list():
+			var usage: int = int(prop.get("usage", 0))
+			if (usage & PROPERTY_USAGE_SCRIPT_VARIABLE) != 0:
+				names.append(String(prop.get("name", "")))
+
+	var props: Dictionary = {}
+	var missing: Array = []
+	for name in names:
+		# Variant.IN absent in GDScript; check via get() and validate.
+		# Use node.get() which returns null for non-existent props; distinguish
+		# by checking the property list.
+		var found: bool = false
+		for prop in node.get_property_list():
+			if String(prop.get("name", "")) == name:
+				found = true
+				break
+		if not found:
+			missing.append(name)
+			continue
+		props[name] = _serialize_value(node.get(name))
+
+	var payload: Dictionary = {
+		"ok": true,
+		"path": str(node.get_path()),
+		"type": node.get_class(),
+		"properties": props,
+	}
+	if missing.size() > 0:
+		payload["missing"] = missing
+	_respond_json(peer, payload)
+
+
+# /emit_signal — emit an arbitrary signal on a node.
+#
+# POST body: {"path": "...", "signal": "name", "args": [optional list]}.
+# Validates the node exists, the signal exists on the node, and emits with
+# the given args. Args must be JSON-native (string / number / bool / null /
+# array / object); callers passing complex Godot types must serialize them
+# themselves or rely on the receiver coercing.
+func _handle_emit_signal(peer: StreamPeerTCP, body: String) -> void:
+	var parsed: Variant = JSON.parse_string(body)
+	if not (parsed is Dictionary):
+		_respond(peer, 400, "application/json", JSON.stringify({"ok": false, "error": "body must be a JSON object"}))
+		return
+	var payload: Dictionary = parsed
+	var node_path: String = "%s" % payload.get("path", "")
+	var signal_name: String = "%s" % payload.get("signal", "")
+	if node_path == "" or signal_name == "":
+		_respond(peer, 400, "application/json", JSON.stringify({"ok": false, "error": "body requires 'path' and 'signal'"}))
+		return
+	var args_raw: Variant = payload.get("args", [])
+	var args_array: Array = args_raw if args_raw is Array else []
+
+	var root: Node = _root_node()
+	if root == null:
+		_respond(peer, 503, "application/json", JSON.stringify({"ok": false, "error": "no tree root"}))
+		return
+	var node: Node = root.get_node_or_null(NodePath(node_path))
+	if node == null:
+		_respond(peer, 404, "application/json", JSON.stringify({"ok": false, "error": "node not found", "path": node_path}))
+		return
+	if not node.has_signal(signal_name):
+		_respond(peer, 422, "application/json", JSON.stringify({
+			"ok": false,
+			"error": "node has no such signal",
+			"path": node_path,
+			"signal": signal_name,
+		}))
+		return
+
+	# Godot's emit_signal takes variadic args; callv expects an Array.
+	var err: int = node.callv("emit_signal", [signal_name] + args_array)
+	if err != OK:
+		_respond(peer, 500, "application/json", JSON.stringify({
+			"ok": false,
+			"error": "emit_signal returned error",
+			"code": err,
+			"path": node_path,
+			"signal": signal_name,
+		}))
+		return
+	_respond_json(peer, {
+		"ok": true,
+		"path": str(node.get_path()),
+		"signal": signal_name,
+		"args_count": args_array.size(),
+	})
+
+
+# Convert a Variant to a JSON-friendly representation. Godot's JSON.stringify
+# already handles primitives + Array + Dictionary; this adds Vector2/3/4,
+# Color, Rect2, and falls back to str() for Object refs and unknown types.
+func _serialize_value(v: Variant) -> Variant:
+	if v is Vector2:
+		return {"x": v.x, "y": v.y}
+	if v is Vector2i:
+		return {"x": v.x, "y": v.y}
+	if v is Vector3:
+		return {"x": v.x, "y": v.y, "z": v.z}
+	if v is Vector3i:
+		return {"x": v.x, "y": v.y, "z": v.z}
+	if v is Vector4:
+		return {"x": v.x, "y": v.y, "z": v.z, "w": v.w}
+	if v is Color:
+		return {"r": v.r, "g": v.g, "b": v.b, "a": v.a}
+	if v is Rect2:
+		return {"x": v.position.x, "y": v.position.y, "w": v.size.x, "h": v.size.y}
+	if v is NodePath:
+		return str(v)
+	if v is StringName:
+		return String(v)
+	if v is Object:
+		# Object refs aren't JSON-serializable; surface a string fingerprint.
+		if v == null:
+			return null
+		return "<%s#%d>" % [v.get_class(), v.get_instance_id()]
+	if v is Array:
+		var out: Array = []
+		for item in v:
+			out.append(_serialize_value(item))
+		return out
+	if v is Dictionary:
+		var out_dict: Dictionary = {}
+		for k in v:
+			out_dict[String(k)] = _serialize_value(v[k])
+		return out_dict
+	return v
 
 
 # /scene_tree — like /scene but rooted at the *current scene* rather than
