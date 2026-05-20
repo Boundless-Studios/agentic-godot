@@ -8,9 +8,11 @@ Drop-in Godot 4 addon that ships two runtime helpers:
   `--inspect-port=`).  Use directly or extend with project-specific flags.
 
 - `RuntimeInspectorServer.gd` — localhost-only HTTP server that exposes
-  `/healthz`, `/scene`, `/text`, `/viewport`, `/screenshot.png`, and
-  `/input` (POST) on a port chosen by `--inspect-port`.  Project code
-  registers extra GET endpoints via `register_provider("/state", ...)`.
+  `/healthz`, `/scene`, `/scene_tree`, `/text`, `/viewport`,
+  `/screenshot.png`, and `/input` (POST) on a port chosen by
+  `--inspect-port`. The scene endpoints accept `?depth=N` and default to
+  depth 32. Project code registers extra GET endpoints via
+  `register_provider("/state", ...)`.
 
 ## Install
 

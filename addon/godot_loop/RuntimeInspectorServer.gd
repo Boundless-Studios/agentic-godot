@@ -6,10 +6,12 @@ class_name RuntimeInspectorServer
 # 127.0.0.1:N and serves these read-only built-in endpoints:
 #
 #   GET  /healthz                -> "ok"
-#   GET  /scene                  -> {root: {name, type, path, visible, children: [...]}}
+#   GET  /scene?depth=N          -> {root: {name, type, path, visible, children: [...]}}
 #                                    rooted at the SceneTree root (Window).
-#   GET  /scene_tree             -> same shape, rooted at get_tree().current_scene
+#                                    depth defaults to 32.
+#   GET  /scene_tree?depth=N     -> same shape, rooted at get_tree().current_scene
 #                                    so headless drivers see only the active screen.
+#                                    depth defaults to 32.
 #   GET  /text                   -> {items: [{path, type, text}, ...]}
 #   GET  /viewport               -> root_size, root_position, content_scale, display info
 #   GET  /screenshot.png         -> PNG of the current viewport
@@ -187,9 +189,9 @@ func _handle_get(peer: StreamPeerTCP, full_path: String) -> void:
 		"/healthz":
 			_respond(peer, 200, "text/plain", "ok\n")
 		"/scene":
-			_respond_json(peer, _scene_dump())
+			_respond_json(peer, _scene_dump(_query_depth(query_string)))
 		"/scene_tree":
-			_respond_json(peer, _scene_tree_dump())
+			_respond_json(peer, _scene_tree_dump(_query_depth(query_string)))
 		"/text":
 			_respond_json(peer, _visible_text())
 		"/screenshot.png":
@@ -202,6 +204,18 @@ func _handle_get(peer: StreamPeerTCP, full_path: String) -> void:
 			_handle_node_properties(peer, _query_get(query_string, "path"), _query_get(query_string, "names"))
 		_:
 			_respond(peer, 404, "text/plain", "not found")
+
+
+const _DEFAULT_TREE_DEPTH := 32
+
+func _query_depth(query_string: String) -> int:
+	var raw: String = _query_get(query_string, "depth")
+	if raw == "":
+		return _DEFAULT_TREE_DEPTH
+	var parsed: int = raw.to_int()
+	if parsed <= 0:
+		return _DEFAULT_TREE_DEPTH
+	return parsed
 
 
 func _query_get(query_string: String, key: String) -> String:
@@ -401,14 +415,14 @@ func _serialize_value(v: Variant) -> Variant:
 
 # /scene_tree — like /scene but rooted at the *current scene* rather than
 # the SceneTree root window, so test drivers see only the active screen.
-func _scene_tree_dump() -> Dictionary:
+func _scene_tree_dump(depth: int = _DEFAULT_TREE_DEPTH) -> Dictionary:
 	var tree := get_tree()
 	if tree == null:
 		return {"available": false}
 	var current: Node = tree.current_scene
 	if current == null:
 		return {"available": false}
-	return {"available": true, "root": _node_to_dict(current, 8)}
+	return {"available": true, "root": _node_to_dict(current, depth), "depth": depth}
 
 
 func _content_length_from_headers(header_text: String) -> int:
@@ -486,11 +500,11 @@ func _handle_input_post(peer: StreamPeerTCP, body: String) -> void:
 	_respond_json(peer, result)
 
 
-func _scene_dump() -> Dictionary:
+func _scene_dump(depth: int = _DEFAULT_TREE_DEPTH) -> Dictionary:
 	var root: Node = _root_node()
 	if root == null:
 		return {"available": false}
-	return {"available": true, "root": _node_to_dict(root, 8)}
+	return {"available": true, "root": _node_to_dict(root, depth), "depth": depth}
 
 
 func _node_to_dict(node: Node, depth: int) -> Dictionary:
@@ -502,10 +516,16 @@ func _node_to_dict(node: Node, depth: int) -> Dictionary:
 	if node is Control:
 		var ctrl: Control = node
 		data["visible"] = ctrl.visible
+		# is_visible_in_tree captures inherited visibility — what the user
+		# actually sees. Test drivers should usually filter on this.
+		data["visible_in_tree"] = ctrl.is_visible_in_tree()
 		data["global_pos"] = {"x": ctrl.global_position.x, "y": ctrl.global_position.y}
 		data["size"] = {"x": ctrl.size.x, "y": ctrl.size.y}
-		if ctrl is Button:
-			data["text"] = (ctrl as Button).text
+		if ctrl is BaseButton:
+			var bb: BaseButton = ctrl
+			data["disabled"] = bb.disabled
+			if ctrl is Button:
+				data["text"] = (ctrl as Button).text
 		elif ctrl is Label:
 			data["text"] = (ctrl as Label).text
 	if depth > 0:
@@ -526,7 +546,21 @@ func _visible_text() -> Dictionary:
 	return {"items": items, "count": items.size()}
 
 
+# A Control is "visible to the user" only when every ancestor is visible too.
+# Plain `visible` returns the local flag, which means hidden modals still leak
+# their text into the inspector. is_visible_in_tree() walks parents and is the
+# right gate for "what the user actually sees".
+func _is_visible_to_user(node: Node) -> bool:
+	if node is Control:
+		return (node as Control).is_visible_in_tree()
+	if node is CanvasItem:
+		return (node as CanvasItem).is_visible_in_tree()
+	return true
+
+
 func _collect_text(node: Node, out: Array) -> void:
+	if not _is_visible_to_user(node):
+		return
 	if node is RichTextLabel:
 		var rt_text: String = (node as RichTextLabel).text
 		if rt_text.strip_edges() != "":
