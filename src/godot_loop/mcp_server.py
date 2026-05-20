@@ -134,12 +134,16 @@ def inspect(endpoint: str = "/scene") -> dict:
 
 
 @mcp.tool()
-def scene() -> dict:
-    """Get the full scene tree (recursive, depth 8).
+def scene(depth: int | None = None) -> dict:
+    """Get the full scene tree (recursive, rooted at the Window).
 
-    Each Control returns its name, type, path, visible, global_pos, and
-    size — enough to find a node by name and click its center.
+    `depth` caps recursion (default 32 — covers any sane UI hierarchy; lower
+    when the dump is too large). Each Control returns its name, type, path,
+    visible, global_pos, and size — enough to find a node by name and click
+    its center.
     """
+    if depth is not None:
+        return _http_get_json(f"/scene?depth={int(depth)}")
     return _http_get_json("/scene")
 
 
@@ -172,13 +176,14 @@ def screenshot(save_to: str | None = None) -> dict:
 
 
 @mcp.tool()
-def find_node(name: str) -> dict | None:
+def find_node(name: str, depth: int = 32) -> dict | None:
     """Walk the scene tree looking for a node by `name`.
 
-    Returns the node dict (with global_pos + size + text) plus computed
-    center coordinates, or null if not found.
+    `depth` caps the underlying /scene recursion (default 32). Returns the
+    node dict (with global_pos + size + text) plus computed center
+    coordinates, or null if not found.
     """
-    tree = _http_get_json("/scene")
+    tree = _http_get_json(f"/scene?depth={int(depth)}")
     hit = _walk_scene(tree.get("root", {}), name)
     if not hit:
         return None
@@ -528,12 +533,16 @@ def get_state() -> dict:
 
 
 @mcp.tool()
-def get_scene_tree() -> dict:
+def get_scene_tree(depth: int | None = None) -> dict:
     """GET /scene_tree — current scene's node hierarchy (rooted at current_scene).
 
-    Distinct from /scene which dumps the full SceneTree root (Window). Used to
-    discover NodePaths for press_button without hardcoding them in tests.
+    `depth` caps recursion (default 32 — covers any sane UI hierarchy; lower
+    when the dump is too large). Distinct from /scene which dumps the full
+    SceneTree root (Window). Used to discover NodePaths for press_button
+    without hardcoding them in tests.
     """
+    if depth is not None:
+        return _http_get_json(f"/scene_tree?depth={int(depth)}")
     return _http_get_json("/scene_tree")
 
 

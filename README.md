@@ -141,7 +141,7 @@ on `127.0.0.1:N`:
 sequenceDiagram
     participant Driver as godot-loop CLI
     participant Server as RuntimeInspectorServer<br/>127.0.0.1:N
-    Driver->>Server: GET /scene
+    Driver->>Server: GET /scene?depth=32
     Server-->>Driver: JSON node tree
     Driver->>Server: GET /text
     Server-->>Driver: JSON of visible text
@@ -210,11 +210,13 @@ Three event types:
 Click coordinates are viewport pixels, not screen pixels.  You usually
 don't want to hard-code them — `GET /scene` returns every `Control`'s
 `global_pos` and `size`, so a script can look up a node by name and
-click its center:
+click its center. The scene endpoints accept `?depth=N`, default to
+depth 32 so nested real-game UI remains discoverable without large
+unbounded dumps, and treat `depth=0` as a root-only dump:
 
 ```python
 import requests
-scene = requests.get("http://127.0.0.1:8765/scene").json()
+scene = requests.get("http://127.0.0.1:8765/scene?depth=32").json()
 
 def find(node, name):
     if node.get("name") == name:

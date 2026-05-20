@@ -114,6 +114,62 @@ def test_get_scene_tree_hits_scene_tree_route(monkeypatch: pytest.MonkeyPatch) -
     assert result["root"]["name"] == "CombatScene"
 
 
+def test_scene_accepts_explicit_depth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """scene(depth=N) forwards the recursion cap to the inspector."""
+    urls = _patch_inspector(
+        monkeypatch,
+        _FakeResponse('{"available": true, "depth": 24, "root": {"name": "root"}}'),
+    )
+
+    result = mcp_server.scene(depth=24)
+
+    assert urls == ["http://127.0.0.1:9999/scene?depth=24"]
+    assert result["depth"] == 24
+
+
+def test_get_scene_tree_accepts_explicit_depth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_scene_tree(depth=N) forwards the recursion cap to the inspector."""
+    urls = _patch_inspector(
+        monkeypatch,
+        _FakeResponse('{"available": true, "depth": 24, "root": {"name": "Main"}}'),
+    )
+
+    result = mcp_server.get_scene_tree(depth=24)
+
+    assert urls == ["http://127.0.0.1:9999/scene_tree?depth=24"]
+    assert result["depth"] == 24
+
+
+def test_find_node_uses_deeper_default_scene_dump(monkeypatch: pytest.MonkeyPatch) -> None:
+    """find_node() requests a scene dump deep enough for nested real-game UI."""
+    urls = _patch_inspector(
+        monkeypatch,
+        _FakeResponse(
+            json.dumps(
+                {
+                    "available": True,
+                    "root": {
+                        "name": "root",
+                        "children": [
+                            {
+                                "name": "Start New Campaign",
+                                "global_pos": {"x": 10, "y": 20},
+                                "size": {"x": 80, "y": 30},
+                            }
+                        ],
+                    },
+                }
+            ),
+        ),
+    )
+
+    result = mcp_server.find_node("Start New Campaign")
+
+    assert urls == ["http://127.0.0.1:9999/scene?depth=32"]
+    assert result is not None
+    assert result["center"] == {"x": 50.0, "y": 35.0}
+
+
 def test_wait_for_route_returns_once_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     """wait_for_route polls until status==200, then returns ok=true."""
     monkeypatch.setattr(mcp_server, "_inspector_base", lambda: "http://127.0.0.1:9999")
