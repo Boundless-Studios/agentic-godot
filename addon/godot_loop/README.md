@@ -10,9 +10,9 @@ Drop-in Godot 4 addon that ships two runtime helpers:
 - `RuntimeInspectorServer.gd` — localhost-only HTTP server that exposes
   `/healthz`, `/scene`, `/scene_tree`, `/text`, `/viewport`,
   `/screenshot.png`, and `/input` (POST) on a port chosen by
-  `--inspect-port`. The scene endpoints accept `?depth=N` and default to
-  depth 32. Project code registers extra GET endpoints via
-  `register_provider("/state", ...)`.
+  `--inspect-port`. The scene endpoints accept `?depth=N`, default to
+  depth 32, and treat `depth=0` as a root-only dump. Project code registers
+  extra GET endpoints via `register_provider("/state", ...)`.
 
 ## Install
 

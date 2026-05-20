@@ -8,10 +8,10 @@ class_name RuntimeInspectorServer
 #   GET  /healthz                -> "ok"
 #   GET  /scene?depth=N          -> {root: {name, type, path, visible, children: [...]}}
 #                                    rooted at the SceneTree root (Window).
-#                                    depth defaults to 32.
+#                                    depth defaults to 32; depth=0 returns root only.
 #   GET  /scene_tree?depth=N     -> same shape, rooted at get_tree().current_scene
 #                                    so headless drivers see only the active screen.
-#                                    depth defaults to 32.
+#                                    depth defaults to 32; depth=0 returns root only.
 #   GET  /text                   -> {items: [{path, type, text}, ...]}
 #   GET  /viewport               -> root_size, root_position, content_scale, display info
 #   GET  /screenshot.png         -> PNG of the current viewport
@@ -212,8 +212,10 @@ func _query_depth(query_string: String) -> int:
 	var raw: String = _query_get(query_string, "depth")
 	if raw == "":
 		return _DEFAULT_TREE_DEPTH
+	if not raw.is_valid_int():
+		return _DEFAULT_TREE_DEPTH
 	var parsed: int = raw.to_int()
-	if parsed <= 0:
+	if parsed < 0:
 		return _DEFAULT_TREE_DEPTH
 	return parsed
 

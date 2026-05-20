@@ -210,9 +210,9 @@ Three event types:
 Click coordinates are viewport pixels, not screen pixels.  You usually
 don't want to hard-code them — `GET /scene` returns every `Control`'s
 `global_pos` and `size`, so a script can look up a node by name and
-click its center. The scene endpoints accept `?depth=N` and default to
+click its center. The scene endpoints accept `?depth=N`, default to
 depth 32 so nested real-game UI remains discoverable without large
-unbounded dumps:
+unbounded dumps, and treat `depth=0` as a root-only dump:
 
 ```python
 import requests
